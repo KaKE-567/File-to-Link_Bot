@@ -1,0 +1,17 @@
+# Secrets & environment
+.env
+
+# Runtime logs & state
+.bot.pid
+bot.log
+tunnel.log
+
+# Telegram sessions & databases
+*.session
+*.session-journal
+file_store.db
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
