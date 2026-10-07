@@ -627,12 +627,31 @@ async def run_server():
     except Exception as e:
         print(f"[WARNING] Could not send startup message: {e}")
 
+    # Auto-ping keep-alive loop to keep free cloud tiers (Render/Koyeb) awake 24/7
+    async def keep_alive_loop():
+        await asyncio.sleep(60)
+        while True:
+            current_url = get_server_url()
+            if current_url and ("onrender.com" in current_url or "koyeb.app" in current_url):
+                try:
+                    import aiohttp
+                    async with aiohttp.ClientSession() as s:
+                        async with s.get(current_url, timeout=10) as r:
+                            pass
+                except Exception:
+                    pass
+            await asyncio.sleep(600)  # Ping every 10 minutes
+
+    ping_task = asyncio.create_task(keep_alive_loop())
+
     print("[*] Bot is running. Press Ctrl+C to stop.")
 
     # Keep alive
     try:
         await client.run_until_disconnected()
     finally:
+        if not ping_task.done():
+            ping_task.cancel()
         if tunnel_process:
             try:
                 tunnel_process.terminate()
