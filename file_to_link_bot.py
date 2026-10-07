@@ -62,6 +62,20 @@ async def init_public_url() -> str:
         CURRENT_PUBLIC_URL = SERVER_URL
         return CURRENT_PUBLIC_URL
 
+    # Auto-detect Render deployment URL
+    render_url = os.getenv("RENDER_EXTERNAL_URL")
+    if render_url:
+        CURRENT_PUBLIC_URL = render_url.rstrip("/")
+        print(f"[✓] Render primary URL detected: {CURRENT_PUBLIC_URL}")
+        return CURRENT_PUBLIC_URL
+
+    # Auto-detect Koyeb deployment URL
+    koyeb_domain = os.getenv("KOYEB_PUBLIC_DOMAIN")
+    if koyeb_domain:
+        CURRENT_PUBLIC_URL = f"https://{koyeb_domain}".rstrip("/")
+        print(f"[✓] Koyeb public domain detected: {CURRENT_PUBLIC_URL}")
+        return CURRENT_PUBLIC_URL
+
     cloudflared_bin = shutil.which("cloudflared") or os.path.expanduser("~/.local/bin/cloudflared")
     if os.path.isfile(cloudflared_bin):
         print("[*] Starting Cloudflare Tunnel for direct public HTTPS access...")
