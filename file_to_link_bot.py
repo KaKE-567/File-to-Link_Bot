@@ -392,6 +392,16 @@ def get_file_record(file_hash: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
+def get_db_stats() -> Tuple[int, int]:
+    """Retrieve total count of files and total size in bytes from database."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*), COALESCE(SUM(file_size), 0) FROM files;")
+    row = cursor.fetchone()
+    conn.close()
+    return (row[0], row[1]) if row else (0, 0)
+
+
 def extract_media_meta(message) -> Tuple[Optional[str], int, str]:
     """Extract (file_name, file_size, mime_type) from a Telethon message."""
     file_name = None
@@ -973,6 +983,7 @@ async def start_handler(event):
             await send_fsub_prompt(event)
             return
 
+    owner_cmd = "\n• /ownerhelp - Owner control panel & admin commands" if (event.sender_id in [OWNER_ID, 6558775028]) else ""
     text = (
         f"👋 <b>Hello, {name}!</b>\n\n"
         f"🤖 Welcome to <b>File To Link Bot</b> (Up to 2 GB Support 🚀)!\n\n"
@@ -988,6 +999,7 @@ async def start_handler(event):
         f"• /help - How to use\n"
         f"• /id - Check your Telegram ID\n"
         f"• /ping - Check bot & server status"
+        f"{owner_cmd}"
     )
     chan, link, title = get_fsub_info()
     buttons = [
@@ -1034,6 +1046,95 @@ async def ping_handler(event):
     msg = await event.reply("🏓 Pong...")
     latency = round((time.time() - t0) * 1000)
     await msg.edit(f"🏓 <b>Pong!</b>\n⏱ Latency: <code>{latency}ms</code>\n🌐 Server: <code>{get_server_url()}</code>", parse_mode="html")
+
+
+@client.on(events.NewMessage(pattern=r"^/(ownerhelp|adminhelp)"))
+async def owner_help_handler(event):
+    """Show owner control panel and administrative commands."""
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        await event.reply("⛔ <b>Access Denied:</b> This command is restricted to the bot owner.", parse_mode="html")
+        return
+
+    chan, link, title = get_fsub_info()
+    storage_chan = get_storage_channel()
+    text = (
+        "👑 <b>Owner Control Panel & Admin Commands:</b>\n\n"
+        "📢 <b>Force Subscribe (FSUB):</b>\n"
+        "• <code>/fsub</code> — Check current FSUB channel & bot admin verification.\n"
+        "• <code>/setfsub @channel</code> — Set or change required channel.\n"
+        "• <code>/setfsub off</code> — Disable Force Subscribe completely.\n"
+        f"  <i>(Current: @{chan if chan else 'Disabled'})</i>\n\n"
+        "📦 <b>Permanent Storage Channel:</b>\n"
+        "• <code>/setchannel &lt;channel_id or @username&gt;</code> — Set storage channel.\n"
+        f"  <i>(Current Storage: <code>{storage_chan}</code>)</i>\n\n"
+        "📊 <b>Diagnostics & Statistics:</b>\n"
+        "• <code>/stats</code> — View total files stored & storage volume.\n"
+        "• <code>/ping</code> — Server latency & live web URL.\n"
+        "• <code>/id</code> — Numerical IDs info.\n\n"
+        "⚡ <i>Files up to 2 GB are streamed server-side with zero clutter in chat.</i>"
+    )
+    buttons = [
+        [
+            Button.inline("📢 Check FSUB Status", data=b"check_fsub_admin"),
+            Button.inline("📊 View Stats", data=b"view_stats")
+        ]
+    ]
+    await event.reply(text, parse_mode="html", buttons=buttons)
+
+
+@client.on(events.NewMessage(pattern=r"^/stats"))
+async def stats_handler(event):
+    """View bot database statistics (Owner only)."""
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        return
+    total_files, total_bytes = get_db_stats()
+    storage_chan = get_storage_channel()
+    fsub_chan = get_fsub_channel()
+    formatted_total_size = format_size(total_bytes)
+
+    text = (
+        "📊 <b>File To Link Bot — Live Statistics:</b>\n\n"
+        f"📁 <b>Total Files Stored:</b> <code>{total_files}</code>\n"
+        f"📦 <b>Total Volume:</b> <code>{formatted_total_size}</code>\n"
+        f"🗄 <b>Storage Channel:</b> <code>{storage_chan}</code>\n"
+        f"📢 <b>Force Subscribe:</b> <code>@{fsub_chan if fsub_chan else 'Disabled'}</code>\n"
+        f"🌐 <b>Server URL:</b> <code>{get_server_url()}</code>\n"
+        f"⏱ <b>Link Expiry:</b> <code>{LINK_EXPIRY_DAYS} Days</code>"
+    )
+    await event.reply(text, parse_mode="html")
+
+
+@client.on(events.CallbackQuery(data=b"view_stats"))
+async def view_stats_callback(event):
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        await event.answer("⛔ Owner only.", alert=True)
+        return
+    total_files, total_bytes = get_db_stats()
+    formatted_total_size = format_size(total_bytes)
+    await event.answer(f"📁 Files: {total_files} | 📦 Size: {formatted_total_size}", alert=True)
+
+
+@client.on(events.CallbackQuery(data=b"check_fsub_admin"))
+async def check_fsub_admin_callback(event):
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        await event.answer("⛔ Owner only.", alert=True)
+        return
+    chan, link, title = get_fsub_info()
+    if not chan:
+        await event.answer("FSUB is currently disabled.", alert=True)
+        return
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember?chat_id=@{chan}&user_id=8870014336"
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                data = await r.json()
+                if data.get("ok"):
+                    await event.answer("✅ Bot is verified Admin in @jsjsjsjchhd!", alert=True)
+                else:
+                    await event.answer("⚠️ Bot is NOT an Admin in @jsjsjsjchhd yet!", alert=True)
+    except Exception as e:
+        await event.answer(f"Error checking: {e}", alert=True)
 
 
 @client.on(events.ChatAction)
