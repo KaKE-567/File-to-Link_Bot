@@ -49,6 +49,10 @@ SERVER_URL = os.getenv("SERVER_URL", "").strip().rstrip("/")
 LINK_EXPIRY_DAYS = int(os.getenv("LINK_EXPIRY_DAYS", "3"))
 LINK_EXPIRY_SECONDS = LINK_EXPIRY_DAYS * 86400  # Default 3 days in seconds
 
+# Permanent Storage / Bin Channel ID (e.g. -1001234567890)
+BIN_CHANNEL_RAW = os.getenv("BIN_CHANNEL", "").strip()
+BIN_CHANNEL_ID = int(BIN_CHANNEL_RAW) if (BIN_CHANNEL_RAW and BIN_CHANNEL_RAW.lstrip("-").isdigit()) else None
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "file_store.db")
 SESSION_NAME = os.path.join(os.path.dirname(__file__), "file_to_link_bot")
 
@@ -241,6 +245,39 @@ def is_video_file(file_name: Optional[str], mime_type: Optional[str], message=No
 
 # Telethon Client
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+
+
+async def backup_to_storage_channel(message) -> Tuple[int, int]:
+    """
+    Backs up media to BIN_CHANNEL_ID so download links stay valid permanently
+    even if the user deletes their original message or chat with the bot.
+    Returns (storage_chat_id, storage_message_id).
+    """
+    if not BIN_CHANNEL_ID:
+        return message.chat_id, message.id
+
+    try:
+        # Try forwarding first
+        fwd = await client.forward_messages(BIN_CHANNEL_ID, message)
+        if fwd:
+            fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
+            print(f"[STORAGE CHANNEL] Successfully forwarded message to {BIN_CHANNEL_ID} (ID: {fwd_msg.id})")
+            return BIN_CHANNEL_ID, fwd_msg.id
+    except Exception as e:
+        print(f"[STORAGE CHANNEL] Forward failed, copying file: {e}", file=sys.stderr)
+        try:
+            sent = await client.send_file(
+                BIN_CHANNEL_ID,
+                file=message.media,
+                caption=f"📁 Backed up from User ID: {message.sender_id}"
+            )
+            if sent:
+                print(f"[STORAGE CHANNEL] Successfully copied file to {BIN_CHANNEL_ID} (ID: {sent.id})")
+                return BIN_CHANNEL_ID, sent.id
+        except Exception as err:
+            print(f"[STORAGE CHANNEL ERROR] Failed to copy to storage channel: {err}", file=sys.stderr)
+
+    return message.chat_id, message.id
 
 
 # --- HTTP Server Endpoints ---
@@ -596,11 +633,13 @@ async def id_handler(event):
     chat_id = event.chat_id
     username = f"@{sender.username}" if sender and sender.username else "None"
     text = (
-        f"🆔 <b>Account ID Info:</b>\n\n"
+        f"🆔 <b>Account & Chat ID Info:</b>\n\n"
         f"• <b>User ID:</b> <code>{user_id}</code>\n"
         f"• <b>Chat ID:</b> <code>{chat_id}</code>\n"
         f"• <b>Username:</b> {username}\n"
     )
+    if event.is_channel or event.is_group:
+        text += f"\n💡 <i>To use this channel for permanent file storage, set:</i>\n<code>BIN_CHANNEL={chat_id}</code>"
     await event.reply(text, parse_mode="html")
 
 
@@ -623,10 +662,13 @@ async def media_handler(event):
     file_hash = secrets.token_urlsafe(8)
     now_ts = int(time.time())
 
+    # Backup to permanent storage channel if configured
+    storage_chat_id, storage_message_id = await backup_to_storage_channel(event.message)
+
     save_file_record(
         file_hash=file_hash,
-        chat_id=event.chat_id,
-        message_id=event.message.id,
+        chat_id=storage_chat_id,
+        message_id=storage_message_id,
         file_name=file_name,
         file_size=file_size,
         mime_type=mime_type
@@ -742,15 +784,18 @@ async def run_server():
     print(f"Owner ID:      {OWNER_ID}")
     print(f"Server Port:   {PORT}")
     print(f"Public URL:    {base_url}")
+    print(f"Storage Chan:  {BIN_CHANNEL_ID if BIN_CHANNEL_ID else 'Disabled (Direct User Chat)'}")
     print(f"Capacity:      Files up to 2 GB (4 GB with Premium)")
     print("=" * 60)
 
     try:
+        storage_status = f"<code>{BIN_CHANNEL_ID}</code>" if BIN_CHANNEL_ID else "<i>Not set (Direct chat fallback)</i>"
         await client.send_message(
             OWNER_ID,
             f"🚀 <b>File To Link Bot is Online!</b>\n\n"
             f"⚡ MTProto Streaming: Up to 2 GB\n"
-            f"🌐 Public Stream URL: {base_url}",
+            f"🌐 Public Stream URL: {base_url}\n"
+            f"📦 Storage Channel: {storage_status}",
             parse_mode="html"
         )
     except Exception as e:

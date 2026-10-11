@@ -9,6 +9,7 @@ Converts any file sent on Telegram into a direct, high-speed download link and a
 ## ✨ Features
 
 - **No 20 MB File Limit:** Supports files up to **2 GB / 4 GB** using Telegram's native MTProto protocol.
+- **Permanent Storage Channel:** Automatically archives all uploaded files to a private Telegram channel so download links never break even if the user deletes their original chat message.
 - **Link Expiration (3 Days):** Generated links automatically expire after 3 days with a user-friendly expiration notice (configurable via `LINK_EXPIRY_DAYS`).
 - **High-Speed Streaming:** C-accelerated decryption (`cryptg`) and 1 MB chunk pipelining for maximum throughput.
 - **HTTP Range Support:** Full seeking support for video players and multi-threaded downloading (IDM, 1DM, ADM, aria2, FDM).
@@ -46,10 +47,13 @@ API_HASH=your_api_hash_here
 PORT=8080
 BIND_ADDRESS=0.0.0.0
 SERVER_URL=
+LINK_EXPIRY_DAYS=3
+BIN_CHANNEL=
 ```
 - **BOT_TOKEN:** Get from [@BotFather](https://t.me/BotFather) on Telegram.
 - **OWNER_ID:** Your numerical Telegram User ID.
 - **API_ID & API_HASH:** Get free from [my.telegram.org](https://my.telegram.org) under *API development tools*.
+- **BIN_CHANNEL (Optional):** Private Telegram channel ID (e.g. `-1001234567890`) where all files are stored. The bot must be an Admin in this channel.
 - **SERVER_URL (Optional):** Set your custom domain or VPS IP (e.g. `https://example.com`). If empty, the bot automatically launches a free Cloudflare HTTPS tunnel.
 
 ---
