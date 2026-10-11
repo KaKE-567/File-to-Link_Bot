@@ -49,9 +49,41 @@ SERVER_URL = os.getenv("SERVER_URL", "").strip().rstrip("/")
 LINK_EXPIRY_DAYS = int(os.getenv("LINK_EXPIRY_DAYS", "3"))
 LINK_EXPIRY_SECONDS = LINK_EXPIRY_DAYS * 86400  # Default 3 days in seconds
 
-# Permanent Storage / Bin Channel ID (e.g. -1001234567890)
-BIN_CHANNEL_RAW = os.getenv("BIN_CHANNEL", "").strip()
-BIN_CHANNEL_ID = int(BIN_CHANNEL_RAW) if (BIN_CHANNEL_RAW and BIN_CHANNEL_RAW.lstrip("-").isdigit()) else None
+# Permanent Storage / Bin Channel ID or Username
+DEFAULT_STORAGE_CHANNEL = -1004441486082
+
+def parse_channel_target(val):
+    if not val:
+        return None
+    val = str(val).strip().strip("'\"")
+    if not val:
+        return None
+    if "t.me/" in val:
+        val = val.split("t.me/")[-1].strip("/")
+    if val.startswith("c/"):
+        parts = val.split("/")
+        val = parts[1] if len(parts) > 1 else val[2:]
+        val = val.split("/")[0]
+    clean = val.lstrip("-")
+    if clean.isdigit():
+        num = int(clean)
+        if val.startswith("-100"):
+            return -num
+        elif val.startswith("-"):
+            if len(clean) >= 9:
+                return -int(f"100{clean}")
+            return -num
+        else:
+            if str(num).startswith("100"):
+                return -num
+            elif len(str(num)) >= 9:
+                return -int(f"100{num}")
+            return -num
+    if not val.startswith("@"):
+        val = "@" + val
+    return val
+
+BIN_CHANNEL_TARGET = parse_channel_target(os.getenv("BIN_CHANNEL", ""))
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "file_store.db")
 SESSION_NAME = os.path.join(os.path.dirname(__file__), "file_to_link_bot")
@@ -160,17 +192,76 @@ def init_db():
             created_at INTEGER NOT NULL
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    """)
+    try:
+        cursor.execute("ALTER TABLE files ADD COLUMN orig_chat_id INTEGER DEFAULT 0")
+    except Exception:
+        pass
+    try:
+        cursor.execute("ALTER TABLE files ADD COLUMN orig_msg_id INTEGER DEFAULT 0")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
-def save_file_record(file_hash: str, chat_id: int, message_id: int, file_name: str, file_size: int, mime_type: str):
+def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else default
+
+
+def set_setting(key: str, value: str):
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
+    conn.commit()
+    conn.close()
+
+
+def get_storage_channel():
+    """Retrieve the active storage channel target."""
+    env_chan = os.getenv("BIN_CHANNEL", "").strip()
+    if env_chan:
+        parsed = parse_channel_target(env_chan)
+        if parsed:
+            return parsed
+
+    saved_chan = get_setting("bin_channel")
+    if saved_chan:
+        parsed = parse_channel_target(saved_chan)
+        if parsed:
+            return parsed
+
+    return DEFAULT_STORAGE_CHANNEL
+
+
+def save_file_record(
+    file_hash: str,
+    chat_id: int,
+    message_id: int,
+    file_name: str,
+    file_size: int,
+    mime_type: str,
+    orig_chat_id: int = 0,
+    orig_msg_id: int = 0
+):
     conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute(
-        "INSERT INTO files (file_hash, chat_id, message_id, file_name, file_size, mime_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (file_hash, chat_id, message_id, file_name, file_size, mime_type, int(time.time()))
+        "INSERT INTO files (file_hash, chat_id, message_id, file_name, file_size, mime_type, created_at, orig_chat_id, orig_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (file_hash, chat_id, message_id, file_name, file_size, mime_type, int(time.time()), orig_chat_id, orig_msg_id)
     )
     conn.commit()
     conn.close()
@@ -249,33 +340,53 @@ client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
 async def backup_to_storage_channel(message) -> Tuple[int, int]:
     """
-    Backs up media to BIN_CHANNEL_ID so download links stay valid permanently
-    even if the user deletes their original message or chat with the bot.
+    Backs up media directly to the storage channel using Telegram's API
+    so files are posted to your channel and links stay valid permanently.
     Returns (storage_chat_id, storage_message_id).
     """
-    if not BIN_CHANNEL_ID:
+    target_channel = get_storage_channel()
+    if not target_channel:
         return message.chat_id, message.id
 
+    # 1. Try Telegram HTTP Bot API copyMessage (guaranteed to work with bot admin in channel)
     try:
-        # Try forwarding first
-        fwd = await client.forward_messages(BIN_CHANNEL_ID, message)
-        if fwd:
-            fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
-            print(f"[STORAGE CHANNEL] Successfully forwarded message to {BIN_CHANNEL_ID} (ID: {fwd_msg.id})")
-            return BIN_CHANNEL_ID, fwd_msg.id
+        import aiohttp
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
+        payload = {
+            "chat_id": target_channel,
+            "from_chat_id": message.chat_id,
+            "message_id": message.id
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    channel_msg_id = data["result"]["message_id"]
+                    print(f"[STORAGE CHANNEL] Successfully copied file to channel {target_channel} (Message ID: {channel_msg_id})")
+                    return target_channel, channel_msg_id
+                else:
+                    print(f"[STORAGE CHANNEL] copyMessage error ({data}), attempting forwardMessage...", file=sys.stderr)
+                    fwd_url = f"https://api.telegram.org/bot{BOT_TOKEN}/forwardMessage"
+                    async with session.post(fwd_url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as fwd_resp:
+                        fwd_data = await fwd_resp.json()
+                        if fwd_data.get("ok"):
+                            channel_msg_id = fwd_data["result"]["message_id"]
+                            print(f"[STORAGE CHANNEL] Successfully forwarded to channel {target_channel} (Message ID: {channel_msg_id})")
+                            return target_channel, channel_msg_id
+                        else:
+                            print(f"[STORAGE CHANNEL ERROR] Telegram Bot API failed: {fwd_data}", file=sys.stderr)
     except Exception as e:
-        print(f"[STORAGE CHANNEL] Forward failed, copying file: {e}", file=sys.stderr)
-        try:
-            sent = await client.send_file(
-                BIN_CHANNEL_ID,
-                file=message.media,
-                caption=f"📁 Backed up from User ID: {message.sender_id}"
-            )
-            if sent:
-                print(f"[STORAGE CHANNEL] Successfully copied file to {BIN_CHANNEL_ID} (ID: {sent.id})")
-                return BIN_CHANNEL_ID, sent.id
-        except Exception as err:
-            print(f"[STORAGE CHANNEL ERROR] Failed to copy to storage channel: {err}", file=sys.stderr)
+        print(f"[STORAGE CHANNEL EXCEPTION] HTTP Bot API backup failed: {e}", file=sys.stderr)
+
+    # 2. Fallback to Telethon client if HTTP API was unreachable
+    try:
+        fwd = await client.forward_messages(target_channel, message)
+        fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
+        if fwd_msg:
+            print(f"[STORAGE CHANNEL] Telethon forward successful to {target_channel} (ID: {fwd_msg.id})")
+            return target_channel, fwd_msg.id
+    except Exception as err:
+        print(f"[STORAGE CHANNEL TELETHON ERROR] Telethon forward failed: {err}", file=sys.stderr)
 
     return message.chat_id, message.id
 
@@ -301,10 +412,24 @@ async def stream_media_response(request: web.Request, as_attachment: bool = Fals
             content_type="text/plain"
         )
 
+    msg = None
     try:
         msg = await client.get_messages(record["chat_id"], ids=record["message_id"])
+    except (ValueError, TypeError):
+        try:
+            entity = await client.get_entity(record["chat_id"])
+            msg = await client.get_messages(entity, ids=record["message_id"])
+        except Exception as e:
+            print(f"[STREAM FETCH] Primary entity resolution failed: {e}", file=sys.stderr)
     except Exception as e:
-        return web.Response(status=500, text=f"Error retrieving message from Telegram: {e}")
+        print(f"[STREAM FETCH] Primary get_messages failed ({record['chat_id']}): {e}", file=sys.stderr)
+
+    # Fallback to original user chat message if storage channel fetch had no media
+    if (not msg or not msg.media) and record.get("orig_chat_id") and record.get("orig_msg_id"):
+        try:
+            msg = await client.get_messages(record["orig_chat_id"], ids=record["orig_msg_id"])
+        except Exception as e:
+            print(f"[STREAM FETCH] Fallback to original chat failed: {e}", file=sys.stderr)
 
     if not msg or not msg.media:
         return web.Response(status=404, text="404: Media file is no longer available.")
@@ -651,9 +776,47 @@ async def ping_handler(event):
     await msg.edit(f"🏓 <b>Pong!</b>\n⏱ Latency: <code>{latency}ms</code>\n🌐 Server: <code>{get_server_url()}</code>", parse_mode="html")
 
 
+@client.on(events.ChatAction)
+async def chat_action_handler(event):
+    """Automatically detect when bot is added to a channel and configure it as storage channel."""
+    if event.is_channel and (event.user_added or event.user_joined):
+        try:
+            me = await client.get_me()
+            if event.user_id == me.id:
+                set_setting("bin_channel", str(event.chat_id))
+                print(f"[AUTO-DETECT] Bot added to channel {event.chat_id}, configured as storage channel.")
+        except Exception:
+            pass
+
+
+@client.on(events.NewMessage(pattern=r"^/(setchannel|setstorage)"))
+async def set_channel_handler(event):
+    """Allow setting storage channel via command inside a channel or private chat."""
+    if event.is_channel or event.is_group:
+        set_setting("bin_channel", str(event.chat_id))
+        await event.reply("✅ <b>This channel is now set as the permanent storage channel!</b>", parse_mode="html")
+        return
+
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        target = parse_channel_target(parts[1])
+        if target:
+            set_setting("bin_channel", str(target))
+            await event.reply("✅ Storage channel updated successfully!", parse_mode="html")
+        else:
+            await event.reply("❌ Invalid channel format. Provide channel ID or @username.", parse_mode="html")
+    else:
+        await event.reply("ℹ️ Send <code>/setchannel &lt;channel_id or @username&gt;</code> or use the command directly in your channel.", parse_mode="html")
+
+
 @client.on(events.NewMessage)
 async def media_handler(event):
     if not event.media or event.text.startswith("/"):
+        return
+
+    # Ignore files posted directly inside the storage channel itself
+    active_storage = get_storage_channel()
+    if active_storage and event.chat_id == active_storage:
         return
 
     status_msg = await event.reply("⏳ <i>Generating links...</i>", parse_mode="html")
@@ -671,7 +834,9 @@ async def media_handler(event):
         message_id=storage_message_id,
         file_name=file_name,
         file_size=file_size,
-        mime_type=mime_type
+        mime_type=mime_type,
+        orig_chat_id=event.chat_id,
+        orig_msg_id=event.message.id
     )
 
     base_url = get_server_url()
@@ -777,6 +942,7 @@ async def run_server():
     await client.start(bot_token=BOT_TOKEN)
     me = await client.get_me()
 
+    active_chan = get_storage_channel()
     print("=" * 60)
     print("🚀 File To Link MTProto Streaming Bot Online!")
     print(f"Bot Name:      {me.first_name}")
@@ -784,18 +950,23 @@ async def run_server():
     print(f"Owner ID:      {OWNER_ID}")
     print(f"Server Port:   {PORT}")
     print(f"Public URL:    {base_url}")
-    print(f"Storage Chan:  {BIN_CHANNEL_ID if BIN_CHANNEL_ID else 'Disabled (Direct User Chat)'}")
+    print(f"Storage Chan:  {active_chan if active_chan else 'Disabled (Direct User Chat)'}")
     print(f"Capacity:      Files up to 2 GB (4 GB with Premium)")
     print("=" * 60)
 
+    # Pre-cache storage channel in Telethon session
+    if active_chan:
+        try:
+            await client.get_messages(active_chan, limit=1)
+        except Exception as err:
+            print(f"[*] Note on storage channel pre-cache: {err}")
+
     try:
-        storage_status = f"<code>{BIN_CHANNEL_ID}</code>" if BIN_CHANNEL_ID else "<i>Not set (Direct chat fallback)</i>"
         await client.send_message(
             OWNER_ID,
             f"🚀 <b>File To Link Bot is Online!</b>\n\n"
             f"⚡ MTProto Streaming: Up to 2 GB\n"
-            f"🌐 Public Stream URL: {base_url}\n"
-            f"📦 Storage Channel: {storage_status}",
+            f"🌐 Public Stream URL: {base_url}",
             parse_mode="html"
         )
     except Exception as e:
