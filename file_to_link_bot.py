@@ -670,43 +670,28 @@ async def stream_media_response(request: web.Request, as_attachment: bool = Fals
     response = web.StreamResponse(status=status_code, headers=headers)
     await response.prepare(request)
 
-    # 1 MB chunk (maximum supported by Telegram MTProto)
-    chunk_size = 1024 * 1024
-    queue = asyncio.Queue(maxsize=4)
-
-    async def prefetch_worker():
+    # High-speed parallel MTProto streaming with connection pooling
+    try:
+        from fast_streamer import fast_stream_file
+        async for chunk in fast_stream_file(client, msg, offset=offset, length=length, concurrency=6):
+            await response.write(chunk)
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    except Exception as err:
+        print(f"[FAST STREAM ERROR] {err}, falling back to standard...", file=sys.stderr)
         try:
             async for chunk in client.iter_download(
                 msg.media,
                 offset=offset,
                 limit=length,
-                chunk_size=chunk_size,
-                request_size=chunk_size
+                chunk_size=1024 * 1024,
+                request_size=1024 * 1024,
             ):
-                await queue.put(chunk)
+                await response.write(chunk)
         except (ConnectionResetError, asyncio.CancelledError):
             pass
-        except Exception as err:
-            print(f"[STREAM PREFETCH ERROR] {err}", file=sys.stderr)
-        finally:
-            await queue.put(None)  # Sentinel to indicate end of stream
-
-    fetch_task = asyncio.create_task(prefetch_worker())
-
-    try:
-        while True:
-            chunk = await queue.get()
-            if chunk is None:
-                break
-            await response.write(chunk)
-            queue.task_done()
-    except (ConnectionResetError, asyncio.CancelledError):
-        pass
-    except Exception as err:
-        print(f"[STREAM WRITE ERROR] {err}", file=sys.stderr)
-    finally:
-        if not fetch_task.done():
-            fetch_task.cancel()
+        except Exception as e2:
+            print(f"[STREAM WRITE ERROR] {e2}", file=sys.stderr)
 
     return response
 
@@ -807,7 +792,7 @@ async def handle_watch(request: web.Request):
         raise web.HTTPFound(download_url)
 
     player_html = f"""
-    <video controls autoplay playsinline style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);">
+    <video controls autoplay playsinline preload="metadata" style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);">
         <source src="{stream_url}" type="{mime}">
         Your browser does not support HTML5 video.
     </video>
@@ -908,7 +893,7 @@ async def handle_debug(request: web.Request):
 
 
 def setup_web_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(client_max_size=1024**3 * 4)
     app.router.add_get("/", handle_index)
     app.router.add_get("/download/{file_hash}", handle_download)
     app.router.add_get("/stream/{file_hash}", handle_raw_stream)
