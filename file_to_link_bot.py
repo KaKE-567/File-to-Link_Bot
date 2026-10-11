@@ -230,6 +230,10 @@ def init_db():
         cursor.execute("ALTER TABLE files ADD COLUMN orig_msg_id INTEGER DEFAULT 0")
     except Exception:
         pass
+    try:
+        cursor.execute("INSERT OR IGNORE INTO users (user_id, first_name, username, created_at) SELECT DISTINCT orig_chat_id, 'User', '', created_at FROM files WHERE orig_chat_id > 0;")
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
@@ -1252,6 +1256,43 @@ async def broadcast_handler(event):
         await status_msg.edit(report, parse_mode="html")
     except Exception:
         await event.reply(report, parse_mode="html")
+
+
+@client.on(events.NewMessage(pattern=r"^/users"))
+async def users_list_handler(event):
+    """View registered users (Owner only)."""
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        return
+    uids = get_all_user_ids()
+    if not uids:
+        await event.reply("ℹ️ No users registered yet. Users are automatically added when they send /start or a file.", parse_mode="html")
+        return
+
+    text = f"👥 <b>Registered Users ({len(uids)}):</b>\n\n"
+    text += "\n".join([f"• <code>{uid}</code>" for uid in uids[:50]])
+    if len(uids) > 50:
+        text += f"\n\n<i>...and {len(uids) - 50} more</i>"
+    await event.reply(text, parse_mode="html")
+
+
+@client.on(events.NewMessage(pattern=r"^/adduser"))
+async def add_user_handler(event):
+    """Manually add a user ID to the broadcast database (Owner only)."""
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        return
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        ids_raw = parts[1].replace(",", " ").split()
+        added = 0
+        for item in ids_raw:
+            item = item.strip().lstrip("-")
+            if item.isdigit():
+                uid = int(item)
+                register_user(uid, f"User_{uid}")
+                added += 1
+        await event.reply(f"✅ Added {added} user(s) to the broadcast database!\n\nTotal Users: <code>{get_user_count()}</code>", parse_mode="html")
+    else:
+        await event.reply("ℹ️ Usage: <code>/adduser &lt;user_id&gt;</code> (or multiple IDs separated by space)", parse_mode="html")
 
 
 @client.on(events.NewMessage(pattern=r"^/stats"))
