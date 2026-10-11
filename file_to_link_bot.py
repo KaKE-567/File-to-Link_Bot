@@ -380,108 +380,6 @@ def get_storage_channel():
     return DEFAULT_STORAGE_CHANNEL
 
 
-# --- Force Subscribe (FSUB) Configuration ---
-DEFAULT_FSUB_CHANNEL = "jsjsjsjchhd"
-DEFAULT_FSUB_TITLE = "♻️ KaKe Roms ♻️ (Miatoll)"
-
-
-def get_fsub_channel() -> Optional[str]:
-    """Retrieve the configured Force Subscribe channel target (username or ID)."""
-    saved = get_setting("fsub_channel")
-    if saved:
-        clean = saved.strip().lower()
-        if clean in ["off", "none", "disable", "disabled"]:
-            return None
-        return saved.strip().lstrip("@")
-
-    env_fsub = os.getenv("FSUB_CHANNEL", DEFAULT_FSUB_CHANNEL).strip()
-    if env_fsub.lower() in ["off", "none", "disable", "disabled", ""]:
-        return None
-    return env_fsub.lstrip("@")
-
-
-def get_fsub_info() -> Tuple[Optional[str], str, str]:
-    """Returns (channel_target, invite_link, channel_title)."""
-    chan = get_fsub_channel()
-    if not chan:
-        return None, "", ""
-    if chan.startswith("-100"):
-        link = f"https://t.me/c/{chan.replace('-100', '')}"
-        title = DEFAULT_FSUB_TITLE
-    else:
-        link = f"https://t.me/{chan}"
-        title = DEFAULT_FSUB_TITLE
-    return chan, link, title
-
-
-async def check_user_fsub(user_id: int) -> Tuple[bool, Optional[str]]:
-    """
-    Checks if a user is subscribed to the Force Subscribe channel.
-    Returns (is_subscribed: bool, error_reason: Optional[str]).
-    error_reason can be None, 'not_admin', or an error description.
-    """
-    if user_id == OWNER_ID or user_id == 6558775028:
-        return True, None
-
-    fsub_chan = get_fsub_channel()
-    if not fsub_chan:
-        return True, None
-
-    target = f"@{fsub_chan}" if not str(fsub_chan).startswith("-100") else fsub_chan
-
-    # 1. Check via Telegram HTTP Bot API getChatMember
-    try:
-        import aiohttp
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember"
-        params = {"chat_id": target, "user_id": user_id}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    status = data["result"].get("status")
-                    if status in ["creator", "administrator", "member", "restricted"]:
-                        return True, None
-                    elif status in ["left", "kicked"]:
-                        return False, None
-                else:
-                    err_desc = data.get("description", "")
-                    if "member list is inaccessible" in err_desc:
-                        return False, "not_admin"
-                    return False, err_desc
-    except Exception as e:
-        print(f"[FSUB ERROR] Bot API check failed: {e}", file=sys.stderr)
-
-    # 2. Telethon fallback
-    try:
-        entity = await client.get_entity(target if not str(target).startswith("-100") else int(target))
-        perms = await client.get_permissions(entity, user_id)
-        if perms and (perms.is_admin or perms.is_creator or not perms.is_banned):
-            return True, None
-        return False, None
-    except Exception as err:
-        err_str = str(err)
-        if "ChatAdminRequired" in err_str or "admin" in err_str.lower():
-            return False, "not_admin"
-        return False, err_str
-
-
-async def send_fsub_prompt(event):
-    """Sends the Force Subscribe prompt to a user."""
-    chan, link, title = get_fsub_info()
-    text = (
-        f"📢 <b>Join Our Updates Channel!</b>\n\n"
-        f"To use <b>File To Link Bot</b> and generate high-speed direct download & streaming links, "
-        f"please join our official updates channel first:\n\n"
-        f"👉 <b>Channel:</b> <a href=\"{link}\">{title}</a>\n\n"
-        f"<i>Tap <b>Join Channel</b> below, then tap <b>🔄 Check Membership</b> once joined!</i>"
-    )
-    buttons = [
-        [Button.url("📢 Join Channel", link)],
-        [Button.inline("🔄 Check Membership", data=b"check_fsub")]
-    ]
-    await event.reply(text, parse_mode="html", buttons=buttons, link_preview=False)
-
-
 def save_file_record(
     file_hash: str,
     chat_id: int,
@@ -1006,7 +904,6 @@ async def handle_debug(request: web.Request):
         "saved_bin_channel": get_setting("bin_channel"),
         "active_storage_channel": get_storage_channel(),
         "default_storage_channel": DEFAULT_STORAGE_CHANNEL,
-        "fsub_channel": get_fsub_channel(),
     })
 
 
@@ -1057,105 +954,12 @@ async def callback_activity_tracker(event):
             register_user(event.sender_id)
 
 
-@client.on(events.CallbackQuery(data=b"check_fsub"))
-async def fsub_callback_handler(event):
-    """Handles the Check Membership inline button."""
-    user_id = event.sender_id
-    if user_id and user_id > 0:
-        try:
-            sender = await event.get_sender()
-            if sender and not getattr(sender, "bot", False):
-                register_user(sender.id, getattr(sender, "first_name", "") or "", getattr(sender, "username", "") or "")
-            else:
-                register_user(user_id)
-        except Exception:
-            register_user(user_id)
-    is_sub, err = await check_user_fsub(user_id)
-    if is_sub:
-        await event.edit(
-            "✅ <b>Membership Verified!</b>\n\n"
-            "Thank you for joining our channel! 🎉\n\n"
-            "You can now send or forward any video, document, or media file (up to 2 GB) "
-            "to generate high-speed streaming & direct download links! 🚀",
-            parse_mode="html"
-        )
-    else:
-        if err == "not_admin":
-            await event.answer("⚠️ Bot is not yet an Admin in @jsjsjsjchhd. The owner must promote @Filetolink_kakebot to Admin to verify subscribers.", alert=True)
-        else:
-            chan, link, title = get_fsub_info()
-            await event.answer(f"❌ You haven't joined {title} yet! Please join the channel first and tap again.", alert=True)
-
-
-@client.on(events.NewMessage(pattern=r"^/fsub"))
-async def fsub_status_handler(event):
-    """Check Force Subscribe status (Owner only)."""
-    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
-        return
-    chan, link, title = get_fsub_info()
-    if not chan:
-        await event.reply("📢 <b>Force Subscribe is currently DISABLED.</b>\n\nUse <code>/setfsub @channel_username</code> to enable.", parse_mode="html")
-        return
-
-    target = f"@{chan}" if not str(chan).startswith("-100") else chan
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember?chat_id={target}&user_id=8870014336"
-    admin_status = "Checking..."
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                data = await r.json()
-                if data.get("ok"):
-                    admin_status = "✅ <b>Active & Bot Admin Verified!</b>"
-                else:
-                    admin_status = "⚠️ <b>Warning: Bot is NOT an Admin in the channel yet!</b>"
-    except Exception as e:
-        admin_status = f"❓ Check error: {e}"
-
-    msg = (
-        f"📢 <b>Force Subscribe (FSUB) Status:</b>\n\n"
-        f"• <b>Target:</b> <code>@{chan}</code>\n"
-        f"• <b>Title:</b> {title}\n"
-        f"• <b>Link:</b> {link}\n"
-        f"• <b>Bot Admin Status:</b> {admin_status}\n\n"
-        f"💡 <i>To change channel:</i> <code>/setfsub @username</code>\n"
-        f"💡 <i>To disable:</i> <code>/setfsub off</code>"
-    )
-    await event.reply(msg, parse_mode="html", link_preview=False)
-
-
-@client.on(events.NewMessage(pattern=r"^/setfsub"))
-async def set_fsub_handler(event):
-    """Set or disable Force Subscribe channel (Owner only)."""
-    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
-        return
-    parts = event.text.split(maxsplit=1)
-    if len(parts) > 1:
-        val = parts[1].strip()
-        if val.lower() in ["off", "disable", "none", "0"]:
-            set_setting("fsub_channel", "off")
-            await event.reply("✅ <b>Force Subscribe has been DISABLED.</b> Users can now generate links without joining.", parse_mode="html")
-        else:
-            clean = val.replace("https://t.me/", "").replace("t.me/", "").strip("/@")
-            set_setting("fsub_channel", clean)
-            await event.reply(f"✅ <b>Force Subscribe channel set to:</b> <code>@{clean}</code>\n\n👉 Ensure <b>@Filetolink_kakebot</b> is an Admin in the channel!", parse_mode="html")
-    else:
-        await event.reply("ℹ️ Usage: <code>/setfsub @channel_username</code> or <code>/setfsub off</code>", parse_mode="html")
-
-
 @client.on(events.NewMessage(pattern="/start"))
 async def start_handler(event):
     sender = await event.get_sender()
     name = sender.first_name if sender else "User"
     if sender and not getattr(sender, "bot", False):
         register_user(sender.id, sender.first_name or "", sender.username or "")
-
-    # Enforce Force Subscribe in private chats
-    if event.is_private:
-        is_sub, _ = await check_user_fsub(event.sender_id)
-        if not is_sub:
-            await send_fsub_prompt(event)
-            return
 
     owner_cmd = "\n• /ownerhelp - Owner control panel & admin commands" if (event.sender_id in [OWNER_ID, 6558775028]) else ""
     text = (
@@ -1175,12 +979,9 @@ async def start_handler(event):
         f"• /ping - Check bot & server status"
         f"{owner_cmd}"
     )
-    chan, link, title = get_fsub_info()
     buttons = [
-        [Button.url(f"📢 {title}", link)] if link else [],
         [Button.url("👤 Developer / Owner", f"tg://user?id={OWNER_ID}")]
     ]
-    buttons = [b for b in buttons if b]
     await event.reply(text, parse_mode="html", buttons=buttons)
 
 
@@ -1251,15 +1052,9 @@ async def owner_help_handler(event):
         await event.reply("⛔ <b>Access Denied:</b> This command is restricted to the bot owner.", parse_mode="html")
         return
 
-    chan, link, title = get_fsub_info()
     storage_chan = get_storage_channel()
     text = (
         "👑 <b>Owner Control Panel & Admin Commands:</b>\n\n"
-        "📢 <b>Force Subscribe (FSUB):</b>\n"
-        "• <code>/fsub</code> — Check current FSUB channel & bot admin verification.\n"
-        "• <code>/setfsub @channel</code> — Set or change required channel.\n"
-        "• <code>/setfsub off</code> — Disable Force Subscribe completely.\n"
-        f"  <i>(Current: @{chan if chan else 'Disabled'})</i>\n\n"
         "📣 <b>Broadcast & User Management:</b>\n"
         "• <code>/broadcast &lt;announcement text&gt;</code> — Send message to all bot users.\n"
         "• <code>/users</code> — View list of all registered users.\n"
@@ -1276,7 +1071,6 @@ async def owner_help_handler(event):
     )
     buttons = [
         [
-            Button.inline("📢 Check FSUB Status", data=b"check_fsub_admin"),
             Button.inline("📊 View Stats", data=b"view_stats")
         ]
     ]
@@ -1429,7 +1223,6 @@ async def stats_handler(event):
         return
     total_files, total_bytes, total_users = get_db_stats()
     storage_chan = get_storage_channel()
-    fsub_chan = get_fsub_channel()
     formatted_total_size = format_size(total_bytes)
 
     text = (
@@ -1438,7 +1231,6 @@ async def stats_handler(event):
         f"📁 <b>Total Files Stored:</b> <code>{total_files}</code>\n"
         f"📦 <b>Total Volume:</b> <code>{formatted_total_size}</code>\n"
         f"🗄 <b>Storage Channel:</b> <code>{storage_chan}</code>\n"
-        f"📢 <b>Force Subscribe:</b> <code>@{fsub_chan if fsub_chan else 'Disabled'}</code>\n"
         f"🌐 <b>Server URL:</b> <code>{get_server_url()}</code>\n"
         f"⏱ <b>Link Expiry:</b> <code>{LINK_EXPIRY_DAYS} Days</code>"
     )
@@ -1453,29 +1245,6 @@ async def view_stats_callback(event):
     total_files, total_bytes, total_users = get_db_stats()
     formatted_total_size = format_size(total_bytes)
     await event.answer(f"👥 Users: {total_users} | 📁 Files: {total_files} | 📦 Size: {formatted_total_size}", alert=True)
-
-
-@client.on(events.CallbackQuery(data=b"check_fsub_admin"))
-async def check_fsub_admin_callback(event):
-    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
-        await event.answer("⛔ Owner only.", alert=True)
-        return
-    chan, link, title = get_fsub_info()
-    if not chan:
-        await event.answer("FSUB is currently disabled.", alert=True)
-        return
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMember?chat_id=@{chan}&user_id=8870014336"
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as s:
-            async with s.get(url, timeout=aiohttp.ClientTimeout(total=5)) as r:
-                data = await r.json()
-                if data.get("ok"):
-                    await event.answer("✅ Bot is verified Admin in @jsjsjsjchhd!", alert=True)
-                else:
-                    await event.answer("⚠️ Bot is NOT an Admin in @jsjsjsjchhd yet!", alert=True)
-    except Exception as e:
-        await event.answer(f"Error checking: {e}", alert=True)
 
 
 @client.on(events.ChatAction)
@@ -1527,13 +1296,6 @@ async def media_handler(event):
     sender = await event.get_sender()
     if sender and not getattr(sender, "bot", False):
         register_user(sender.id, sender.first_name or "", sender.username or "")
-
-    # Enforce Force Subscribe in private chats
-    if event.is_private:
-        is_sub, _ = await check_user_fsub(event.sender_id)
-        if not is_sub:
-            await send_fsub_prompt(event)
-            return
 
     # If message has no media attached
     if not event.media:
