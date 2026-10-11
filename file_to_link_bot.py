@@ -206,6 +206,39 @@ def extract_media_meta(message) -> Tuple[Optional[str], int, str]:
     return file_name, file_size, mime_type
 
 
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv",
+    ".wmv", ".3gp", ".ts", ".m4v", ".mpg", ".mpeg",
+    ".vob", ".ogv"
+}
+
+
+def is_video_file(file_name: Optional[str], mime_type: Optional[str], message=None) -> bool:
+    """Accurately detect whether the file is a video."""
+    if message:
+        # Check Telethon document attributes
+        doc = getattr(message, "document", None)
+        if doc and getattr(doc, "attributes", None):
+            for attr in doc.attributes:
+                if isinstance(attr, DocumentAttributeVideo):
+                    return True
+        if getattr(message, "video", None):
+            return True
+
+    if mime_type and mime_type.lower().startswith("video/"):
+        return True
+
+    if file_name:
+        _, ext = os.path.splitext(file_name.lower())
+        if ext in VIDEO_EXTENSIONS:
+            return True
+        guessed_mime, _ = mimetypes.guess_type(file_name)
+        if guessed_mime and guessed_mime.lower().startswith("video/"):
+            return True
+
+    return False
+
+
 # Telethon Client
 client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
 
@@ -411,35 +444,16 @@ async def handle_watch(request: web.Request):
     mime = record["mime_type"]
     expiry_time_str = format_expiry_date(record["created_at"])
 
-    is_video = "video" in mime
-    is_audio = "audio" in mime
-    is_image = "image" in mime
+    # If the file is not a video, redirect directly to download
+    if not is_video_file(file_name, mime):
+        raise web.HTTPFound(download_url)
 
-    player_html = ""
-    if is_video:
-        player_html = f"""
-        <video controls autoplay playsinline style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);">
-            <source src="{stream_url}" type="{mime}">
-            Your browser does not support HTML5 video.
-        </video>
-        """
-    elif is_audio:
-        player_html = f"""
-        <audio controls autoplay style="width: 100%; margin: 20px 0;">
-            <source src="{stream_url}" type="{mime}">
-            Your browser does not support HTML5 audio.
-        </audio>
-        """
-    elif is_image:
-        player_html = f"""
-        <img src="{stream_url}" alt="{file_name}" style="max-width: 100%; max-height: 80vh; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);" />
-        """
-    else:
-        player_html = """
-        <div style="padding: 40px; background: #222; border-radius: 8px; color: #bbb;">
-            📁 Preview not available for this file type. Click download below.
-        </div>
-        """
+    player_html = f"""
+    <video controls autoplay playsinline style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);">
+        <source src="{stream_url}" type="{mime}">
+        Your browser does not support HTML5 video.
+    </video>
+    """
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -624,20 +638,34 @@ async def media_handler(event):
     formatted_size = format_size(file_size)
     expiry_str = format_expiry_date(now_ts)
 
-    reply_text = (
-        f"✅ <b>File Link Generated!</b>\n\n"
-        f"📁 <b>Name:</b> <code>{file_name}</code>\n"
-        f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
-        f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
-        f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
-        f"📥 <b>Direct Download Link:</b>\n{download_link}\n\n"
-        f"🎬 <b>Online Stream / Watch:</b>\n{watch_link}"
-    )
+    is_video = is_video_file(file_name, mime_type, event.message)
 
-    buttons = [
-        [Button.url("📥 Direct Download", download_link)],
-        [Button.url("🎬 Stream / Watch Online", watch_link)],
-    ]
+    if is_video:
+        reply_text = (
+            f"✅ <b>File Link Generated!</b>\n\n"
+            f"📁 <b>Name:</b> <code>{file_name}</code>\n"
+            f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
+            f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
+            f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
+            f"📥 <b>Direct Download Link:</b>\n{download_link}\n\n"
+            f"🎬 <b>Online Stream / Watch:</b>\n{watch_link}"
+        )
+        buttons = [
+            [Button.url("📥 Direct Download", download_link)],
+            [Button.url("🎬 Stream / Watch Online", watch_link)],
+        ]
+    else:
+        reply_text = (
+            f"✅ <b>File Link Generated!</b>\n\n"
+            f"📁 <b>Name:</b> <code>{file_name}</code>\n"
+            f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
+            f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
+            f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
+            f"📥 <b>Direct Download Link:</b>\n{download_link}"
+        )
+        buttons = [
+            [Button.url("📥 Direct Download", download_link)],
+        ]
 
     await status_msg.edit(reply_text, parse_mode="html", buttons=buttons)
 
@@ -679,10 +707,12 @@ async def cli_send_file(file_path: str, caption: str = "", target_chat: int = OW
     download_link = f"{base_url}/download/{file_hash}"
     watch_link = f"{base_url}/watch/{file_hash}"
     expiry_str = format_expiry_date(now_ts)
+    is_video = is_video_file(file_name, mime_type, msg)
 
     print(f"[SUCCESS] File uploaded! Message ID: {msg.id}")
     print(f"Download Link: {download_link}")
-    print(f"Watch Link:    {watch_link}")
+    if is_video:
+        print(f"Watch Link:    {watch_link}")
     print(f"Expires:       {expiry_str} ({LINK_EXPIRY_DAYS} days)")
     await cli_client.disconnect()
 
