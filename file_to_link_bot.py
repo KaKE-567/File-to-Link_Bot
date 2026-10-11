@@ -306,6 +306,11 @@ def extract_media_meta(message) -> Tuple[Optional[str], int, str]:
             file_name = f"photo_{message.id}.jpg"
             mime_type = "image/jpeg"
             file_size = message.file.size if message.file else 0
+        elif is_video_file(None, mime_type, message):
+            ext = mimetypes.guess_extension(mime_type) or ".mp4"
+            file_name = f"video_{message.id}{ext}"
+            if mime_type == "application/octet-stream":
+                mime_type = "video/mp4"
         else:
             ext = mimetypes.guess_extension(mime_type) or ".bin"
             file_name = f"file_{message.id}{ext}"
@@ -877,18 +882,22 @@ async def set_channel_handler(event):
 
 @client.on(events.NewMessage)
 async def media_handler(event):
-    # Ignore bot commands (handled by respective command handlers)
-    if event.text and event.text.startswith("/"):
-        return
-
     # Ignore bot's own outgoing messages
     if event.message.out:
+        return
+
+    # Ignore explicit storage channel configuration commands
+    if event.text and any(event.text.strip().startswith(c) for c in ["/setchannel", "/setstorage"]):
         return
 
     active_storage = get_storage_channel()
 
     # If message has no media attached
     if not event.media:
+        # Ignore bot slash commands for text-only messages (handled by respective command handlers)
+        if event.text and event.text.startswith("/"):
+            return
+
         if event.is_private:
             text = (event.text or "").strip()
             if any(p in text.lower() for p in ["http://", "https://", "www.", "instagram.com", "tiktok.com", "youtu.be", "youtube.com"]):
