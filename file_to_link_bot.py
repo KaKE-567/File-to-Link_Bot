@@ -21,6 +21,7 @@ import mimetypes
 import argparse
 import re
 import json
+import html
 import shutil
 from typing import Optional, Tuple
 from urllib.parse import quote
@@ -40,7 +41,10 @@ from telethon.tl.types import (
     DocumentAttributeAudio,
     MessageMediaDocument,
     MessageMediaPhoto,
+    MessageMediaWebPage,
 )
+
+from url_downloader import extract_url_from_text, download_url_media, MAX_URL_DOWNLOAD_MB
 
 # Load environment
 load_dotenv()
@@ -951,9 +955,10 @@ async def start_handler(event):
         f"👋 <b>Hello, {name}!</b>\n\n"
         f"🤖 Welcome to <b>File To Link Bot</b> (Up to 2 GB Support 🚀)!\n\n"
         f"Send or forward any file (documents, videos, audio, images, apk, archives), "
-        f"and I will generate high-speed <b>Direct Download</b> and <b>Online Streaming</b> links for you!\n\n"
+        f"or paste any social media video link, and I will generate high-speed <b>Direct Download</b> and <b>Online Streaming</b> links for you!\n\n"
         f"<b>Features:</b>\n"
         f"• Supports files up to <b>2 GB</b> (and 4 GB for Premium)\n"
+        f"• 🌐 <b>Social Media Downloader:</b> Paste YouTube, Instagram, TikTok, Facebook, Pinterest, Twitter/X, Reddit links (up to {MAX_URL_DOWNLOAD_MB} MB)!\n"
         f"• Instant Streaming & Web Player\n"
         f"• Resume-supported direct download links\n"
         f"• IDM & Download Manager compatible\n"
@@ -983,7 +988,7 @@ async def help_handler(event):
             register_user(event.sender_id)
     text = (
         "📖 <b>How to Use:</b>\n\n"
-        "1. Send or forward any file to this bot.\n"
+        "1. Send or forward any <b>file</b> (up to 2 GB) or paste any <b>social media video link</b> (YouTube, Instagram, TikTok, Facebook, Pinterest, Twitter/X, Reddit up to 500 MB).\n"
         "2. The bot generates both a <b>Direct Download Link</b> and a <b>Stream / Watch</b> link.\n"
         "3. You can paste the link in your browser, VLC media player, or any download manager.\n"
         f"4. Links remain active for <b>{LINK_EXPIRY_DAYS} days</b>.\n\n"
@@ -1282,27 +1287,155 @@ async def media_handler(event):
     if sender and not getattr(sender, "bot", False):
         register_user(sender.id, sender.first_name or "", sender.username or "")
 
-    # If message has no media attached
-    if not event.media:
+    # Check if message is a URL / web link or has no actual file media
+    is_webpage_preview = isinstance(event.media, MessageMediaWebPage)
+    if not event.media or is_webpage_preview:
         # Ignore bot slash commands for text-only messages (handled by respective command handlers)
         if event.text and event.text.startswith("/"):
             return
 
         if event.is_private:
-            text = (event.text or "").strip()
-            if any(p in text.lower() for p in ["http://", "https://", "www.", "instagram.com", "tiktok.com", "youtu.be", "youtube.com"]):
-                msg = (
-                    "⚠️ <b>Web Link Detected!</b>\n\n"
-                    "This bot generates direct stream & download links for <b>Telegram media files</b>, not external web links.\n\n"
-                    "👉 <b>How to use:</b>\n"
-                    "• Forward or upload an actual <b>video, audio, or document file</b> from Telegram.\n"
-                    "• The bot will instantly generate a high-speed stream and direct download link for your channel and friends!"
-                )
-            else:
-                msg = (
-                    "ℹ️ <b>Please send or forward a media file!</b>\n\n"
-                    "Send or forward any file (video, document, audio, photo, apk, archive) up to 2 GB to generate direct links."
-                )
+            url = extract_url_from_text(event.text)
+            if url:
+                status_msg = None
+                try:
+                    status_msg = await event.reply(
+                        f"⏳ <b>Processing link...</b>\n\n"
+                        f"🔍 <i>Downloading media from link (Limit: {MAX_URL_DOWNLOAD_MB} MB)...</i>",
+                        parse_mode="html"
+                    )
+                except Exception as e:
+                    print(f"[ERROR] Could not send initial link status: {e}", file=sys.stderr)
+
+                meta = None
+                try:
+                    file_path, meta, err = await download_url_media(url)
+                    if err:
+                        err_text = f"❌ <b>Could not download link:</b>\n{html.escape(err)}"
+                        if status_msg:
+                            await status_msg.edit(err_text, parse_mode="html")
+                        else:
+                            await event.reply(err_text, parse_mode="html")
+                        return
+
+                    if not file_path or not meta:
+                        err_text = "❌ <b>Could not extract media from link.</b>"
+                        if status_msg:
+                            await status_msg.edit(err_text, parse_mode="html")
+                        else:
+                            await event.reply(err_text, parse_mode="html")
+                        return
+
+                    if status_msg:
+                        try:
+                            await status_msg.edit(
+                                "⏳ <b>Processing link...</b>\n\n"
+                                "📤 <i>Saving to permanent storage & generating high-speed links...</i>",
+                                parse_mode="html"
+                            )
+                        except Exception:
+                            pass
+
+                    target_channel = active_storage
+                    if not target_channel or target_channel in [OWNER_ID, 6558775028, -int(f"100{OWNER_ID}")]:
+                        target_channel = DEFAULT_STORAGE_CHANNEL
+
+                    clean_title = meta.get("title") or "video"
+                    storage_msg = None
+                    try:
+                        storage_msg = await client.send_file(
+                            target_channel,
+                            file=file_path,
+                            caption=f"🎥 <b>{html.escape(clean_title[:100])}</b>\n🔗 <i>Source: {html.escape(url[:80])}</i>",
+                            parse_mode="html",
+                            supports_streaming=True
+                        )
+                        storage_chat_id = target_channel
+                        storage_message_id = storage_msg.id
+                    except Exception as upload_err:
+                        print(f"[STORAGE UPLOAD ERROR] Primary channel failed: {upload_err}", file=sys.stderr)
+                        if target_channel != DEFAULT_STORAGE_CHANNEL:
+                            storage_msg = await client.send_file(
+                                DEFAULT_STORAGE_CHANNEL,
+                                file=file_path,
+                                caption=f"🎥 <b>{html.escape(clean_title[:100])}</b>\n🔗 <i>Source: {html.escape(url[:80])}</i>",
+                                parse_mode="html",
+                                supports_streaming=True
+                            )
+                            storage_chat_id = DEFAULT_STORAGE_CHANNEL
+                            storage_message_id = storage_msg.id
+                        else:
+                            raise upload_err
+
+                    raw_ext = meta.get("ext", "mp4").lstrip(".")
+                    safe_title = re.sub(r'[/\\:*?"<>|]', '_', clean_title).strip() or "video"
+                    file_name = f"{safe_title}.{raw_ext}"
+                    file_size = meta.get("filesize", 0)
+                    mime_type, _ = mimetypes.guess_type(file_name)
+                    if not mime_type:
+                        mime_type = "video/mp4" if raw_ext in ["mp4", "mkv", "webm", "mov"] else "application/octet-stream"
+
+                    file_hash = secrets.token_urlsafe(8)
+                    now_ts = int(time.time())
+
+                    save_file_record(
+                        file_hash=file_hash,
+                        chat_id=storage_chat_id,
+                        message_id=storage_message_id,
+                        file_name=file_name,
+                        file_size=file_size,
+                        mime_type=mime_type,
+                        orig_chat_id=event.chat_id,
+                        orig_msg_id=event.message.id
+                    )
+
+                    base_url = get_server_url()
+                    download_link = f"{base_url}/download/{file_hash}"
+                    watch_link = f"{base_url}/watch/{file_hash}"
+                    formatted_size = format_size(file_size)
+                    expiry_str = format_expiry_date(now_ts)
+
+                    reply_text = (
+                        f"✅ <b>Media Link Generated!</b>\n\n"
+                        f"📁 <b>Name:</b> <code>{html.escape(file_name)}</code>\n"
+                        f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
+                        f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
+                        f"🌐 <b>Source:</b> <code>{html.escape(url[:60])}...</code>\n"
+                        f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
+                        f"📥 <b>Direct Download Link:</b>\n{download_link}\n\n"
+                        f"🎬 <b>Online Stream / Watch:</b>\n{watch_link}"
+                    )
+                    buttons = [
+                        [Button.url("📥 Direct Download", download_link)],
+                        [Button.url("🎬 Stream / Watch Online", watch_link)],
+                    ]
+
+                    if status_msg:
+                        await status_msg.edit(reply_text, parse_mode="html", buttons=buttons)
+                    else:
+                        await event.reply(reply_text, parse_mode="html", buttons=buttons)
+
+                except Exception as link_err:
+                    print(f"[ERROR processing URL] {link_err}", file=sys.stderr)
+                    err_msg = f"❌ <b>Error processing link:</b> <code>{html.escape(str(link_err)[:150])}</code>"
+                    if status_msg:
+                        try:
+                            await status_msg.edit(err_msg, parse_mode="html")
+                        except Exception:
+                            await event.reply(err_msg, parse_mode="html")
+                    else:
+                        await event.reply(err_msg, parse_mode="html")
+                finally:
+                    if meta and meta.get("temp_dir") and os.path.isdir(meta["temp_dir"]):
+                        shutil.rmtree(meta["temp_dir"], ignore_errors=True)
+                return
+
+            msg = (
+                "ℹ️ <b>Please send a media file or video link!</b>\n\n"
+                "• Send or forward any <b>file or video</b> up to 2 GB.\n"
+                f"• Or paste any <b>social media or video link</b> (YouTube, Instagram, TikTok, Facebook, Pinterest, Twitter/X, Reddit) up to {MAX_URL_DOWNLOAD_MB} MB!\n\n"
+                "I'll generate high-speed direct download and streaming links instantly."
+            )
             await event.reply(msg, parse_mode="html")
         return
 
