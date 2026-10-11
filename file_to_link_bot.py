@@ -260,7 +260,7 @@ class ThrottledProgressTracker:
         self.last_percent = percent
         cur_str = format_size(current)
         tot_str = format_size(total) if total > 0 else ""
-        speed_str = f"{format_size(int(speed))}/s" if speed > 0 else ""
+        speed_str = f"⚡ {format_size(int(speed))}/s" if speed > 0 else ""
         eta_str = f" • ETA {format_eta(eta)}" if eta > 0 else ""
         size_str = f" ({cur_str} of {tot_str})" if tot_str else f" ({cur_str})"
         stats_line = f"\n<code>{speed_str}{eta_str}</code>" if speed_str else ""
@@ -1560,7 +1560,7 @@ async def media_handler(event):
 
                 meta = None
                 try:
-                    dl_tracker = ThrottledProgressTracker(status_msg, "Downloading...")
+                    dl_tracker = ThrottledProgressTracker(status_msg, "📥 Downloading...")
                     file_path, meta, err = await download_url_media(url, progress_callback=dl_tracker.on_download_progress)
                     if err:
                         err_text = f"❌ Error: <code>{html.escape(err)}</code>"
@@ -1584,7 +1584,7 @@ async def media_handler(event):
 
                     clean_title = meta.get("title") or "video"
                     storage_msg = None
-                    up_tracker = ThrottledProgressTracker(status_msg, "Uploading...")
+                    up_tracker = ThrottledProgressTracker(status_msg, "☁️ Uploading to storage...")
                     try:
                         storage_msg = await client.send_file(
                             target_channel,
@@ -1640,15 +1640,18 @@ async def media_handler(event):
                     formatted_size = format_size(file_size)
 
                     reply_text = (
-                        f"<b>{html.escape(file_name)}</b>\n\n"
-                        f"Size: <code>{formatted_size}</code>\n"
-                        f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                        f"<b>Stream:</b>\n{watch_link}\n\n"
-                        f"<b>Download:</b>\n{download_link}"
+                        f"🎬 <b>{html.escape(file_name)}</b>\n\n"
+                        f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
+                        f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                        f"🍿 <b>Stream Online:</b>\n"
+                        f"{watch_link}\n\n"
+                        f"⚡ <b>Fast Download:</b>\n"
+                        f"{download_link}\n\n"
+                        f"<i>🚀 High-speed MTProto • Play in browser or VLC / MX Player</i>"
                     )
                     buttons = [
-                        [Button.url("Watch Online", watch_link)],
-                        [Button.url("Download", download_link)],
+                        [Button.url("🍿 Stream Online", watch_link)],
+                        [Button.url("⚡ Fast Download", download_link)],
                     ]
 
                     if status_msg:
@@ -1717,37 +1720,45 @@ async def media_handler(event):
 
         if is_video:
             reply_text = (
-                f"<b>{html.escape(file_name)}</b>\n\n"
-                f"Size: <code>{formatted_size}</code>\n"
-                f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                f"<b>Stream:</b>\n{watch_link}\n\n"
-                f"<b>Download:</b>\n{download_link}"
+                f"🎬 <b>{html.escape(file_name)}</b>\n\n"
+                f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
+                f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"🍿 <b>Stream Online:</b>\n"
+                f"{watch_link}\n\n"
+                f"⚡ <b>Fast Download:</b>\n"
+                f"{download_link}\n\n"
+                f"<i>🚀 High-speed MTProto • Play in browser or VLC / MX Player</i>"
             )
             buttons = [
-                [Button.url("Watch Online", watch_link)],
-                [Button.url("Download", download_link)],
+                [Button.url("🍿 Stream Online", watch_link)],
+                [Button.url("⚡ Fast Download", download_link)],
             ]
         elif is_audio:
             reply_text = (
-                f"<b>{html.escape(file_name)}</b>\n\n"
-                f"Size: <code>{formatted_size}</code>\n"
-                f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                f"<b>Stream:</b>\n{watch_link}\n\n"
-                f"<b>Download:</b>\n{download_link}"
+                f"🎵 <b>{html.escape(file_name)}</b>\n\n"
+                f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
+                f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"🎧 <b>Listen Online:</b>\n"
+                f"{watch_link}\n\n"
+                f"⚡ <b>Fast Download:</b>\n"
+                f"{download_link}\n\n"
+                f"<i>🚀 High-speed stream • Listen in browser or audio player</i>"
             )
             buttons = [
-                [Button.url("Listen Online", watch_link)],
-                [Button.url("Download", download_link)],
+                [Button.url("🎧 Listen Online", watch_link)],
+                [Button.url("⚡ Fast Download", download_link)],
             ]
         else:
             reply_text = (
-                f"<b>{html.escape(file_name)}</b>\n\n"
-                f"Size: <code>{formatted_size}</code>\n"
-                f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                f"<b>Download:</b>\n{download_link}"
+                f"📄 <b>{html.escape(file_name)}</b>\n\n"
+                f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
+                f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"⚡ <b>Fast Download:</b>\n"
+                f"{download_link}\n\n"
+                f"<i>🚀 High-speed MTProto • Supports IDM & download managers</i>"
             )
             buttons = [
-                [Button.url("Download", download_link)],
+                [Button.url("⚡ Fast Download", download_link)],
             ]
 
         if status_msg:
