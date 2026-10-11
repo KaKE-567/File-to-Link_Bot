@@ -843,10 +843,11 @@ async def media_handler(event):
     if event.text and event.text.startswith("/"):
         return
 
-    # Ignore files posted directly inside the storage channel itself
-    active_storage = get_storage_channel()
-    if active_storage and event.chat_id == active_storage:
+    # Ignore bot's own outgoing messages
+    if event.message.out:
         return
+
+    active_storage = get_storage_channel()
 
     # If message has no media attached
     if not event.media:
@@ -879,8 +880,13 @@ async def media_handler(event):
         file_hash = secrets.token_urlsafe(8)
         now_ts = int(time.time())
 
-        # Backup to permanent storage channel if configured
-        storage_chat_id, storage_message_id = await backup_to_storage_channel(event.message)
+        # If file was posted directly in the storage channel, use it directly
+        if active_storage and event.chat_id == active_storage:
+            storage_chat_id = event.chat_id
+            storage_message_id = event.message.id
+        else:
+            # Backup to permanent storage channel
+            storage_chat_id, storage_message_id = await backup_to_storage_channel(event.message)
 
         save_file_record(
             file_hash=file_hash,
@@ -892,13 +898,6 @@ async def media_handler(event):
             orig_chat_id=event.chat_id,
             orig_msg_id=event.message.id
         )
-
-        # Delete original uploaded media from private bot chat so the file ONLY goes to Meowmeow group
-        if event.is_private and storage_chat_id != event.chat_id:
-            try:
-                await event.delete()
-            except Exception as e:
-                print(f"[NOTE] Could not delete original private message: {e}")
 
         base_url = get_server_url()
         download_link = f"{base_url}/download/{file_hash}"
