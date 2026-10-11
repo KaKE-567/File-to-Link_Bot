@@ -28,7 +28,11 @@ from dotenv import load_dotenv
 from aiohttp import web
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-from telethon.errors.rpcerrorlist import FloodWaitError
+from telethon.errors.rpcerrorlist import (
+    FloodWaitError,
+    UserIsBlockedError,
+    InputUserDeactivatedError,
+)
 from telethon.tl.types import (
     DocumentAttributeFilename,
     DocumentAttributeVideo,
@@ -210,6 +214,14 @@ def init_db():
             value TEXT NOT NULL
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            first_name TEXT,
+            username TEXT,
+            created_at INTEGER
+        )
+    """)
     try:
         cursor.execute("ALTER TABLE files ADD COLUMN orig_chat_id INTEGER DEFAULT 0")
     except Exception:
@@ -220,6 +232,59 @@ def init_db():
         pass
     conn.commit()
     conn.close()
+
+
+def register_user(user_id: int, first_name: str = "", username: str = ""):
+    """Save or update user in database for broadcasting."""
+    if not user_id or user_id < 0:
+        return
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("""
+            INSERT INTO users (user_id, first_name, username, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                first_name = excluded.first_name,
+                username = excluded.username;
+        """, (user_id, first_name or "", username or "", int(time.time())))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[DB] Error registering user {user_id}: {e}", file=sys.stderr)
+
+
+def get_all_user_ids() -> list:
+    """Retrieve list of all registered user IDs."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users;")
+    rows = cursor.fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def get_user_count() -> int:
+    """Retrieve total count of registered users."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users;")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
+def delete_user(user_id: int):
+    """Remove user from database if blocked or deactivated."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
@@ -392,14 +457,19 @@ def get_file_record(file_hash: str) -> Optional[dict]:
     return dict(row) if row else None
 
 
-def get_db_stats() -> Tuple[int, int]:
-    """Retrieve total count of files and total size in bytes from database."""
+def get_db_stats() -> Tuple[int, int, int]:
+    """Retrieve total count of files, total size in bytes, and total registered users."""
     conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*), COALESCE(SUM(file_size), 0) FROM files;")
     row = cursor.fetchone()
+    files_count = row[0] if row else 0
+    total_size = row[1] if row else 0
+    cursor.execute("SELECT COUNT(*) FROM users;")
+    user_row = cursor.fetchone()
+    users_count = user_row[0] if user_row else 0
     conn.close()
-    return (row[0], row[1]) if row else (0, 0)
+    return files_count, total_size, users_count
 
 
 def extract_media_meta(message) -> Tuple[Optional[str], int, str]:
@@ -975,6 +1045,8 @@ async def set_fsub_handler(event):
 async def start_handler(event):
     sender = await event.get_sender()
     name = sender.first_name if sender else "User"
+    if sender and not getattr(sender, "bot", False):
+        register_user(sender.id, sender.first_name or "", sender.username or "")
 
     # Enforce Force Subscribe in private chats
     if event.is_private:
@@ -1064,11 +1136,14 @@ async def owner_help_handler(event):
         "• <code>/setfsub @channel</code> — Set or change required channel.\n"
         "• <code>/setfsub off</code> — Disable Force Subscribe completely.\n"
         f"  <i>(Current: @{chan if chan else 'Disabled'})</i>\n\n"
+        "📣 <b>Broadcast & Announcements:</b>\n"
+        "• <code>/broadcast &lt;announcement text&gt;</code> — Send message to all bot users.\n"
+        "• <i>Or reply to any photo/video/doc/sticker with <code>/broadcast</code> to forward it!</i>\n\n"
         "📦 <b>Permanent Storage Channel:</b>\n"
         "• <code>/setchannel &lt;channel_id or @username&gt;</code> — Set storage channel.\n"
         f"  <i>(Current Storage: <code>{storage_chan}</code>)</i>\n\n"
         "📊 <b>Diagnostics & Statistics:</b>\n"
-        "• <code>/stats</code> — View total files stored & storage volume.\n"
+        "• <code>/stats</code> — View total users, files stored & volume.\n"
         "• <code>/ping</code> — Server latency & live web URL.\n"
         "• <code>/id</code> — Numerical IDs info.\n\n"
         "⚡ <i>Files up to 2 GB are streamed server-side with zero clutter in chat.</i>"
@@ -1082,18 +1157,116 @@ async def owner_help_handler(event):
     await event.reply(text, parse_mode="html", buttons=buttons)
 
 
+@client.on(events.NewMessage(pattern=r"^/broadcast"))
+async def broadcast_handler(event):
+    """Broadcast a message or forwarded media to all registered bot users (Owner only)."""
+    if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
+        await event.reply("⛔ <b>Access Denied:</b> This command is restricted to the bot owner.", parse_mode="html")
+        return
+
+    reply_msg = await event.get_reply_message()
+    broadcast_text = ""
+    parts = event.text.split(maxsplit=1)
+    if len(parts) > 1:
+        broadcast_text = parts[1].strip()
+
+    if not reply_msg and not broadcast_text:
+        usage = (
+            "ℹ️ <b>How to Use /broadcast:</b>\n\n"
+            "1. <b>Text Broadcast:</b>\n"
+            "   <code>/broadcast &lt;Your announcement text&gt;</code>\n\n"
+            "2. <b>Media / Post Broadcast:</b>\n"
+            "   Reply to any photo, video, document, audio, or message with <code>/broadcast</code>!\n\n"
+            "<i>The message will be delivered to every registered bot user.</i>"
+        )
+        await event.reply(usage, parse_mode="html")
+        return
+
+    user_ids = get_all_user_ids()
+    if OWNER_ID not in user_ids:
+        user_ids.append(OWNER_ID)
+
+    total_targets = len(user_ids)
+    if total_targets == 0:
+        await event.reply("⚠️ No registered users found in the database yet.", parse_mode="html")
+        return
+
+    status_msg = await event.reply(f"⏳ <b>Starting broadcast to {total_targets} users...</b>", parse_mode="html")
+    start_time = time.time()
+
+    success_count = 0
+    blocked_count = 0
+    failed_count = 0
+
+    for idx, uid in enumerate(user_ids, 1):
+        try:
+            if reply_msg:
+                await client.send_message(uid, reply_msg)
+            else:
+                await client.send_message(uid, broadcast_text, parse_mode="html")
+            success_count += 1
+        except FloodWaitError as fe:
+            print(f"[BROADCAST] FloodWait: sleeping {fe.seconds + 1}s...")
+            await asyncio.sleep(fe.seconds + 1)
+            try:
+                if reply_msg:
+                    await client.send_message(uid, reply_msg)
+                else:
+                    await client.send_message(uid, broadcast_text, parse_mode="html")
+                success_count += 1
+            except Exception:
+                failed_count += 1
+        except (UserIsBlockedError, InputUserDeactivatedError):
+            blocked_count += 1
+            delete_user(uid)
+        except Exception as e:
+            failed_count += 1
+            print(f"[BROADCAST ERROR] User {uid}: {e}", file=sys.stderr)
+
+        await asyncio.sleep(0.05)
+
+        if idx % 20 == 0 or idx == total_targets:
+            try:
+                elapsed = round(time.time() - start_time, 1)
+                await status_msg.edit(
+                    f"📡 <b>Broadcasting in Progress...</b>\n\n"
+                    f"👥 <b>Progress:</b> <code>{idx}/{total_targets}</code>\n"
+                    f"✅ <b>Sent:</b> <code>{success_count}</code>\n"
+                    f"🚫 <b>Blocked:</b> <code>{blocked_count}</code>\n"
+                    f"⏱ <b>Elapsed:</b> <code>{elapsed}s</code>",
+                    parse_mode="html"
+                )
+            except Exception:
+                pass
+
+    time_taken = round(time.time() - start_time, 1)
+    report = (
+        "📢 <b>Broadcast Completed Successfully!</b>\n\n"
+        f"👥 <b>Total Target:</b> <code>{total_targets}</code>\n"
+        f"✅ <b>Delivered:</b> <code>{success_count}</code>\n"
+        f"🚫 <b>Blocked / Inactive:</b> <code>{blocked_count}</code>\n"
+        f"❌ <b>Failed / Errors:</b> <code>{failed_count}</code>\n"
+        f"⏱ <b>Time Taken:</b> <code>{time_taken}s</code>"
+    )
+    try:
+        await status_msg.edit(report, parse_mode="html")
+    except Exception:
+        await event.reply(report, parse_mode="html")
+
+
 @client.on(events.NewMessage(pattern=r"^/stats"))
 async def stats_handler(event):
     """View bot database statistics (Owner only)."""
     if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
         return
-    total_files, total_bytes = get_db_stats()
+    total_files, total_bytes, total_users = get_db_stats()
     storage_chan = get_storage_channel()
     fsub_chan = get_fsub_channel()
     formatted_total_size = format_size(total_bytes)
 
     text = (
         "📊 <b>File To Link Bot — Live Statistics:</b>\n\n"
+        f"👥 <b>Registered Users:</b> <code>{total_users}</code>\n"
         f"📁 <b>Total Files Stored:</b> <code>{total_files}</code>\n"
         f"📦 <b>Total Volume:</b> <code>{formatted_total_size}</code>\n"
         f"🗄 <b>Storage Channel:</b> <code>{storage_chan}</code>\n"
@@ -1109,9 +1282,9 @@ async def view_stats_callback(event):
     if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
         await event.answer("⛔ Owner only.", alert=True)
         return
-    total_files, total_bytes = get_db_stats()
+    total_files, total_bytes, total_users = get_db_stats()
     formatted_total_size = format_size(total_bytes)
-    await event.answer(f"📁 Files: {total_files} | 📦 Size: {formatted_total_size}", alert=True)
+    await event.answer(f"👥 Users: {total_users} | 📁 Files: {total_files} | 📦 Size: {formatted_total_size}", alert=True)
 
 
 @client.on(events.CallbackQuery(data=b"check_fsub_admin"))
@@ -1181,6 +1354,11 @@ async def media_handler(event):
         return
 
     active_storage = get_storage_channel()
+
+    # Register user in database
+    sender = await event.get_sender()
+    if sender and not getattr(sender, "bot", False):
+        register_user(sender.id, sender.first_name or "", sender.username or "")
 
     # Enforce Force Subscribe in private chats
     if event.is_private:
@@ -1371,6 +1549,7 @@ async def run_server():
         await asyncio.sleep(fe.seconds)
         await start_telegram_client()
     me = await client.get_me()
+    register_user(OWNER_ID, "Owner", "Xx_KaKe_xX")
 
     active_chan = get_storage_channel()
     print("=" * 60)
