@@ -60,15 +60,25 @@ def parse_channel_target(val):
     val = str(val).strip().strip("'\"")
     if not val:
         return None
+    clean_username = val.lstrip("@").lower()
+    if clean_username in ["xx_kake_xx", "filetolink_kakebot"]:
+        return None
     if "t.me/" in val:
         val = val.split("t.me/")[-1].strip("/")
     if val.startswith("c/"):
         parts = val.split("/")
         val = parts[1] if len(parts) > 1 else val[2:]
         val = val.split("/")[0]
+        clean_c = val.lstrip("-")
+        if clean_c.isdigit():
+            return -int(f"100{clean_c}")
     clean = val.lstrip("-")
     if clean.isdigit():
         num = int(clean)
+        if num == OWNER_ID or num == 6558775028 or clean == f"100{OWNER_ID}" or clean == "1006558775028":
+            return None
+        if num == 4441486082:
+            return -1004441486082
         if val.startswith("-100"):
             return -num
         elif val.startswith("-"):
@@ -76,11 +86,9 @@ def parse_channel_target(val):
                 return -int(f"100{clean}")
             return -num
         else:
-            if str(num).startswith("100"):
+            if str(num).startswith("100") and len(str(num)) >= 10:
                 return -num
-            elif len(str(num)) >= 9:
-                return -int(f"100{num}")
-            return -num
+            return None
     if not val.startswith("@"):
         val = "@" + val
     return val
@@ -238,13 +246,13 @@ def get_storage_channel():
     env_chan = os.getenv("BIN_CHANNEL", "").strip()
     if env_chan:
         parsed = parse_channel_target(env_chan)
-        if parsed and parsed != OWNER_ID:
+        if parsed and (isinstance(parsed, str) or parsed < 0):
             return parsed
 
     saved_chan = get_setting("bin_channel")
     if saved_chan:
         parsed = parse_channel_target(saved_chan)
-        if parsed and parsed != OWNER_ID:
+        if parsed and (isinstance(parsed, str) or parsed < 0):
             return parsed
 
     return DEFAULT_STORAGE_CHANNEL
@@ -364,8 +372,9 @@ async def backup_to_storage_channel(message) -> Tuple[int, int]:
     Returns (storage_chat_id, storage_message_id).
     """
     target_channel = get_storage_channel()
-    if not target_channel:
-        return message.chat_id, message.id
+    # Guard: Never allow target to be owner, user private chat, or invalid peer
+    if not target_channel or target_channel in [OWNER_ID, 6558775028, -int(f"100{OWNER_ID}"), message.chat_id]:
+        target_channel = DEFAULT_STORAGE_CHANNEL
 
     # 1. Try Telethon MTProto forward_messages with from_peer (supports files up to 2 GB server-side)
     try:
@@ -375,7 +384,15 @@ async def backup_to_storage_channel(message) -> Tuple[int, int]:
             print(f"[STORAGE CHANNEL] Telethon forward successful to {target_channel} (ID: {fwd_msg.id})")
             return target_channel, fwd_msg.id
     except Exception as err:
-        print(f"[STORAGE CHANNEL MTPROTO] Forward failed ({err}), trying Bot API copyMessage...", file=sys.stderr)
+        print(f"[STORAGE CHANNEL MTPROTO] Forward with from_peer failed ({err}), trying message object forward...", file=sys.stderr)
+        try:
+            fwd = await client.forward_messages(target_channel, message)
+            fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
+            if fwd_msg:
+                print(f"[STORAGE CHANNEL] Telethon message forward successful to {target_channel} (ID: {fwd_msg.id})")
+                return target_channel, fwd_msg.id
+        except Exception as err2:
+            print(f"[STORAGE CHANNEL MTPROTO] Forward failed ({err2}), trying Bot API copyMessage...", file=sys.stderr)
 
     # 2. Try Telegram HTTP Bot API copyMessage
     try:
@@ -413,6 +430,17 @@ async def backup_to_storage_channel(message) -> Tuple[int, int]:
             return target_channel, sent.id
     except Exception as err:
         print(f"[STORAGE CHANNEL TELETHON ERROR] Telethon send_file failed: {err}", file=sys.stderr)
+
+    # 4. If target_channel was custom and failed, fallback to DEFAULT_STORAGE_CHANNEL as last resort
+    if target_channel != DEFAULT_STORAGE_CHANNEL:
+        try:
+            fwd = await client.forward_messages(DEFAULT_STORAGE_CHANNEL, message.id, from_peer=message.chat_id)
+            fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
+            if fwd_msg:
+                print(f"[STORAGE CHANNEL] Fallback to DEFAULT_STORAGE_CHANNEL successful (ID: {fwd_msg.id})")
+                return DEFAULT_STORAGE_CHANNEL, fwd_msg.id
+        except Exception:
+            pass
 
     return message.chat_id, message.id
 
@@ -726,12 +754,24 @@ async def handle_watch(request: web.Request):
     return web.Response(text=html, content_type="text/html")
 
 
+async def handle_debug(request: web.Request):
+    return web.json_response({
+        "status": "online",
+        "bin_channel_env": os.getenv("BIN_CHANNEL", ""),
+        "owner_id": OWNER_ID,
+        "saved_bin_channel": get_setting("bin_channel"),
+        "active_storage_channel": get_storage_channel(),
+        "default_storage_channel": DEFAULT_STORAGE_CHANNEL,
+    })
+
+
 def setup_web_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", handle_index)
     app.router.add_get("/download/{file_hash}", handle_download)
     app.router.add_get("/stream/{file_hash}", handle_raw_stream)
     app.router.add_get("/watch/{file_hash}", handle_watch)
+    app.router.add_get("/debug", handle_debug)
     return app
 
 
@@ -808,7 +848,7 @@ async def chat_action_handler(event):
     if event.is_channel and (event.user_added or event.user_joined):
         try:
             me = await client.get_me()
-            if event.user_id == me.id:
+            if event.user_id == me.id and event.chat_id < 0:
                 set_setting("bin_channel", str(event.chat_id))
                 print(f"[AUTO-DETECT] Bot added to channel {event.chat_id}, configured as storage channel.")
         except Exception:
@@ -818,7 +858,7 @@ async def chat_action_handler(event):
 @client.on(events.NewMessage(pattern=r"^/(setchannel|setstorage)"))
 async def set_channel_handler(event):
     """Allow setting storage channel via command inside a channel or private chat."""
-    if event.is_channel or event.is_group:
+    if (event.is_channel or event.is_group) and event.chat_id < 0:
         set_setting("bin_channel", str(event.chat_id))
         await event.reply("✅ <b>This channel is now set as the permanent storage channel!</b>", parse_mode="html")
         return
@@ -826,13 +866,13 @@ async def set_channel_handler(event):
     parts = event.text.split(maxsplit=1)
     if len(parts) > 1:
         target = parse_channel_target(parts[1])
-        if target:
+        if target and (isinstance(target, str) or target < 0):
             set_setting("bin_channel", str(target))
-            await event.reply("✅ Storage channel updated successfully!", parse_mode="html")
+            await event.reply(f"✅ Storage channel updated to <code>{target}</code> successfully!", parse_mode="html")
         else:
-            await event.reply("❌ Invalid channel format. Provide channel ID or @username.", parse_mode="html")
+            await event.reply("❌ Invalid channel format. Provide a channel ID (e.g. <code>-1004441486082</code>) or @channel_username. Users/private chats cannot be storage channels.", parse_mode="html")
     else:
-        await event.reply("ℹ️ Send <code>/setchannel &lt;channel_id or @username&gt;</code> or use the command directly in your channel.", parse_mode="html")
+        await event.reply("ℹ️ Send <code>/setchannel &lt;channel_id or @username&gt;</code> or use the command directly inside your channel.", parse_mode="html")
 
 
 @client.on(events.NewMessage)
