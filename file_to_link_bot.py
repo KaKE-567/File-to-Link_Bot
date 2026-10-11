@@ -359,15 +359,25 @@ async def start_telegram_client():
 
 async def backup_to_storage_channel(message) -> Tuple[int, int]:
     """
-    Backs up media directly to the storage channel using Telegram's API
-    so files are posted to your channel and links stay valid permanently.
+    Backs up media directly to the storage channel so files are posted to your channel
+    and links stay valid permanently. Supports files up to 2 GB via MTProto.
     Returns (storage_chat_id, storage_message_id).
     """
     target_channel = get_storage_channel()
     if not target_channel:
         return message.chat_id, message.id
 
-    # 1. Try Telegram HTTP Bot API copyMessage (guaranteed to work with bot admin in channel)
+    # 1. Try Telethon MTProto forward_messages with from_peer (supports files up to 2 GB server-side)
+    try:
+        fwd = await client.forward_messages(target_channel, message.id, from_peer=message.chat_id)
+        fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
+        if fwd_msg:
+            print(f"[STORAGE CHANNEL] Telethon forward successful to {target_channel} (ID: {fwd_msg.id})")
+            return target_channel, fwd_msg.id
+    except Exception as err:
+        print(f"[STORAGE CHANNEL MTPROTO] Forward failed ({err}), trying Bot API copyMessage...", file=sys.stderr)
+
+    # 2. Try Telegram HTTP Bot API copyMessage
     try:
         import aiohttp
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/copyMessage"
@@ -381,7 +391,7 @@ async def backup_to_storage_channel(message) -> Tuple[int, int]:
                 data = await resp.json()
                 if data.get("ok"):
                     channel_msg_id = data["result"]["message_id"]
-                    print(f"[STORAGE CHANNEL] Successfully copied file to channel {target_channel} (Message ID: {channel_msg_id})")
+                    print(f"[STORAGE CHANNEL] Bot API copied file to channel {target_channel} (ID: {channel_msg_id})")
                     return target_channel, channel_msg_id
                 else:
                     print(f"[STORAGE CHANNEL] copyMessage error ({data}), attempting forwardMessage...", file=sys.stderr)
@@ -390,22 +400,10 @@ async def backup_to_storage_channel(message) -> Tuple[int, int]:
                         fwd_data = await fwd_resp.json()
                         if fwd_data.get("ok"):
                             channel_msg_id = fwd_data["result"]["message_id"]
-                            print(f"[STORAGE CHANNEL] Successfully forwarded to channel {target_channel} (Message ID: {channel_msg_id})")
+                            print(f"[STORAGE CHANNEL] Bot API forwarded to channel {target_channel} (ID: {channel_msg_id})")
                             return target_channel, channel_msg_id
-                        else:
-                            print(f"[STORAGE CHANNEL ERROR] Telegram Bot API failed: {fwd_data}", file=sys.stderr)
     except Exception as e:
         print(f"[STORAGE CHANNEL EXCEPTION] HTTP Bot API backup failed: {e}", file=sys.stderr)
-
-    # 2. Fallback to Telethon client if HTTP API was unreachable
-    try:
-        fwd = await client.forward_messages(target_channel, message)
-        fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
-        if fwd_msg:
-            print(f"[STORAGE CHANNEL] Telethon forward successful to {target_channel} (ID: {fwd_msg.id})")
-            return target_channel, fwd_msg.id
-    except Exception as err:
-        print(f"[STORAGE CHANNEL TELETHON ERROR] Telethon forward failed: {err}", file=sys.stderr)
 
     # 3. Direct send_file fallback
     try:
@@ -898,6 +896,13 @@ async def media_handler(event):
             orig_chat_id=event.chat_id,
             orig_msg_id=event.message.id
         )
+
+        # Delete user's uploaded file from private bot chat so it ONLY goes to Meowmeow group!
+        if event.is_private and storage_chat_id == active_storage:
+            try:
+                await event.delete()
+            except Exception as e:
+                print(f"[NOTE] Could not delete original private message: {e}")
 
         base_url = get_server_url()
         download_link = f"{base_url}/download/{file_hash}"
