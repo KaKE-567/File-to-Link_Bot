@@ -20,6 +20,7 @@ import asyncio
 import mimetypes
 import argparse
 import re
+import json
 import shutil
 from typing import Optional, Tuple
 from urllib.parse import quote
@@ -238,6 +239,9 @@ def init_db():
     conn.close()
 
 
+SEED_USERS_PATH = os.path.join(os.path.dirname(__file__), "seed_users.json")
+
+
 def register_user(user_id: int, first_name: str = "", username: str = ""):
     """Save or update user in database for broadcasting."""
     if not user_id or user_id < 0:
@@ -250,11 +254,12 @@ def register_user(user_id: int, first_name: str = "", username: str = ""):
             INSERT INTO users (user_id, first_name, username, created_at)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(user_id) DO UPDATE SET
-                first_name = excluded.first_name,
-                username = excluded.username;
+                first_name = CASE WHEN excluded.first_name != '' THEN excluded.first_name ELSE users.first_name END,
+                username = CASE WHEN excluded.username != '' THEN excluded.username ELSE users.username END;
         """, (user_id, first_name or "", username or "", int(time.time())))
         conn.commit()
         conn.close()
+        sync_seed_users_file()
     except Exception as e:
         print(f"[DB] Error registering user {user_id}: {e}", file=sys.stderr)
 
@@ -263,20 +268,68 @@ def get_all_user_ids() -> list:
     """Retrieve list of all registered user IDs."""
     conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users;")
+    cursor.execute("SELECT DISTINCT user_id FROM users WHERE user_id > 0;")
     rows = cursor.fetchall()
     conn.close()
-    return [r[0] for r in rows]
+    uids = [r[0] for r in rows]
+    if OWNER_ID and OWNER_ID not in uids:
+        uids.append(OWNER_ID)
+    return uids
+
+
+def get_all_users() -> list:
+    """Retrieve list of all registered users with their details."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, first_name, username, created_at FROM users WHERE user_id > 0 ORDER BY created_at DESC;")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 
 def get_user_count() -> int:
     """Retrieve total count of registered users."""
     conn = sqlite3.connect(DB_PATH, timeout=30)
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM users;")
+    cursor.execute("SELECT COUNT(DISTINCT user_id) FROM users WHERE user_id > 0;")
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else 0
+
+
+def load_seed_users():
+    """Load pre-seeded users from seed_users.json into SQLite on startup."""
+    register_user(OWNER_ID, "Owner", "Xx_KaKe_xX")
+    register_user(8848280741, "𝙺𝚎𝚗", "MrKen_Kaneki")
+
+    if os.path.exists(SEED_USERS_PATH):
+        try:
+            with open(SEED_USERS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    for u in data:
+                        if isinstance(u, dict) and u.get("user_id"):
+                            register_user(
+                                int(u["user_id"]),
+                                u.get("first_name", "") or "",
+                                u.get("username", "") or ""
+                            )
+        except Exception as e:
+            print(f"[SEED] Note loading seed_users.json: {e}", file=sys.stderr)
+
+
+def sync_seed_users_file():
+    """Sync current database users into seed_users.json so they persist across runs."""
+    try:
+        users = get_all_users()
+        data = [
+            {"user_id": uid, "first_name": fn, "username": un}
+            for uid, fn, un, _ in users
+        ]
+        with open(SEED_USERS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def delete_user(user_id: int):
@@ -968,10 +1021,55 @@ def setup_web_app() -> web.Application:
 
 
 # --- Telethon Telegram Bot Handlers ---
+@client.on(events.NewMessage(incoming=True))
+async def user_activity_tracker(event):
+    """Automatically track and register every user who interacts with the bot."""
+    if event.is_private and event.sender_id and event.sender_id > 0:
+        try:
+            sender = await event.get_sender()
+            if sender and not getattr(sender, "bot", False):
+                register_user(
+                    sender.id,
+                    getattr(sender, "first_name", "") or "",
+                    getattr(sender, "username", "") or ""
+                )
+            else:
+                register_user(event.sender_id)
+        except Exception:
+            register_user(event.sender_id)
+
+
+@client.on(events.CallbackQuery)
+async def callback_activity_tracker(event):
+    """Register users when they click any inline button."""
+    if event.sender_id and event.sender_id > 0:
+        try:
+            sender = await event.get_sender()
+            if sender and not getattr(sender, "bot", False):
+                register_user(
+                    sender.id,
+                    getattr(sender, "first_name", "") or "",
+                    getattr(sender, "username", "") or ""
+                )
+            else:
+                register_user(event.sender_id)
+        except Exception:
+            register_user(event.sender_id)
+
+
 @client.on(events.CallbackQuery(data=b"check_fsub"))
 async def fsub_callback_handler(event):
     """Handles the Check Membership inline button."""
     user_id = event.sender_id
+    if user_id and user_id > 0:
+        try:
+            sender = await event.get_sender()
+            if sender and not getattr(sender, "bot", False):
+                register_user(sender.id, getattr(sender, "first_name", "") or "", getattr(sender, "username", "") or "")
+            else:
+                register_user(user_id)
+        except Exception:
+            register_user(user_id)
     is_sub, err = await check_user_fsub(user_id)
     if is_sub:
         await event.edit(
@@ -1088,6 +1186,15 @@ async def start_handler(event):
 
 @client.on(events.NewMessage(pattern="/help"))
 async def help_handler(event):
+    if event.is_private and event.sender_id:
+        try:
+            sender = await event.get_sender()
+            if sender and not getattr(sender, "bot", False):
+                register_user(sender.id, getattr(sender, "first_name", "") or "", getattr(sender, "username", "") or "")
+            else:
+                register_user(event.sender_id)
+        except Exception:
+            register_user(event.sender_id)
     text = (
         "📖 <b>How to Use:</b>\n\n"
         "1. Send or forward any file to this bot.\n"
@@ -1102,6 +1209,10 @@ async def help_handler(event):
 @client.on(events.NewMessage(pattern="/id"))
 async def id_handler(event):
     sender = await event.get_sender()
+    if sender and not getattr(sender, "bot", False):
+        register_user(sender.id, getattr(sender, "first_name", "") or "", getattr(sender, "username", "") or "")
+    elif event.sender_id:
+        register_user(event.sender_id)
     user_id = sender.id if sender else "Unknown"
     chat_id = event.chat_id
     username = f"@{sender.username}" if sender and sender.username else "None"
@@ -1118,6 +1229,15 @@ async def id_handler(event):
 
 @client.on(events.NewMessage(pattern="/ping"))
 async def ping_handler(event):
+    if event.is_private and event.sender_id:
+        try:
+            sender = await event.get_sender()
+            if sender and not getattr(sender, "bot", False):
+                register_user(sender.id, getattr(sender, "first_name", "") or "", getattr(sender, "username", "") or "")
+            else:
+                register_user(event.sender_id)
+        except Exception:
+            register_user(event.sender_id)
     t0 = time.time()
     msg = await event.reply("🏓 Pong...")
     latency = round((time.time() - t0) * 1000)
@@ -1140,8 +1260,10 @@ async def owner_help_handler(event):
         "• <code>/setfsub @channel</code> — Set or change required channel.\n"
         "• <code>/setfsub off</code> — Disable Force Subscribe completely.\n"
         f"  <i>(Current: @{chan if chan else 'Disabled'})</i>\n\n"
-        "📣 <b>Broadcast & Announcements:</b>\n"
+        "📣 <b>Broadcast & User Management:</b>\n"
         "• <code>/broadcast &lt;announcement text&gt;</code> — Send message to all bot users.\n"
+        "• <code>/users</code> — View list of all registered users.\n"
+        "• <code>/adduser &lt;id&gt;</code> — Manually register user ID(s) for broadcasting.\n"
         "• <i>Or reply to any photo/video/doc/sticker with <code>/broadcast</code> to forward it!</i>\n\n"
         "📦 <b>Permanent Storage Channel:</b>\n"
         "• <code>/setchannel &lt;channel_id or @username&gt;</code> — Set storage channel.\n"
@@ -1263,15 +1385,20 @@ async def users_list_handler(event):
     """View registered users (Owner only)."""
     if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
         return
-    uids = get_all_user_ids()
-    if not uids:
-        await event.reply("ℹ️ No users registered yet. Users are automatically added when they send /start or a file.", parse_mode="html")
+    users = get_all_users()
+    if not users:
+        await event.reply("ℹ️ No users registered yet.", parse_mode="html")
         return
 
-    text = f"👥 <b>Registered Users ({len(uids)}):</b>\n\n"
-    text += "\n".join([f"• <code>{uid}</code>" for uid in uids[:50]])
-    if len(uids) > 50:
-        text += f"\n\n<i>...and {len(uids) - 50} more</i>"
+    text = f"👥 <b>Registered Users ({len(users)}):</b>\n\n"
+    lines = []
+    for uid, fname, uname, _ in users[:50]:
+        name_part = f" ({fname})" if fname else ""
+        user_part = f" [@{uname}]" if uname else ""
+        lines.append(f"• <code>{uid}</code>{name_part}{user_part}")
+    text += "\n".join(lines)
+    if len(users) > 50:
+        text += f"\n\n<i>...and {len(users) - 50} more</i>"
     await event.reply(text, parse_mode="html")
 
 
@@ -1590,7 +1717,23 @@ async def run_server():
         await asyncio.sleep(fe.seconds)
         await start_telegram_client()
     me = await client.get_me()
-    register_user(OWNER_ID, "Owner", "Xx_KaKe_xX")
+    load_seed_users()
+
+    # Auto-seed users from Telegram API getUpdates queue if available
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates?limit=100", timeout=aiohttp.ClientTimeout(total=8)) as r:
+                u_data = await r.json()
+                if u_data.get("ok"):
+                    for u in u_data.get("result", []):
+                        m = u.get("message", {}) or {}
+                        cq = u.get("callback_query", {}) or {}
+                        f = cq.get("from", {}) or m.get("from", {})
+                        if f.get("id") and not f.get("is_bot"):
+                            register_user(f["id"], f.get("first_name", "") or "", f.get("username", "") or "")
+    except Exception as e:
+        print(f"[*] Note on initial user sync: {e}")
 
     active_chan = get_storage_channel()
     print("=" * 60)
