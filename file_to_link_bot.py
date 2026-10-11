@@ -194,6 +194,89 @@ def format_size(bytes_size: int) -> str:
     return f"{s} {units[i]}"
 
 
+def make_progress_bar(current: int, total: int, length: int = 10) -> str:
+    """Generate a clean visual text progress bar."""
+    if not total or total <= 0:
+        return "░" * length
+    fraction = min(max(current / total, 0.0), 1.0)
+    filled = int(fraction * length)
+    empty = length - filled
+    return "█" * filled + "░" * empty
+
+
+def format_eta(seconds: Optional[float]) -> str:
+    """Format estimated seconds remaining into MM:SS or HH:MM:SS."""
+    if seconds is None or seconds <= 0:
+        return "calculating..."
+    s = int(seconds)
+    m, s = divmod(s, 60)
+    h, m = divmod(m, 60)
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
+
+
+class ThrottledProgressTracker:
+    """Tracks download/upload progress and updates Telegram message at a safe interval."""
+
+    def __init__(self, message, action_title: str, update_interval: float = 2.5):
+        self.message = message
+        self.action_title = action_title
+        self.update_interval = update_interval
+        self.last_update_time = time.time()
+        self.last_percent = -1
+        self.start_time = time.time()
+        self.loop = asyncio.get_running_loop()
+
+    def on_download_progress(self, current: int, total: int, speed: float = 0, eta: float = 0):
+        if not self.message:
+            return
+        now = time.time()
+        percent = int((current / total * 100)) if total > 0 else 0
+        if now - self.last_update_time < self.update_interval and percent < 100:
+            return
+        self.last_update_time = now
+        asyncio.run_coroutine_threadsafe(
+            self._async_edit(current, total, speed, eta, percent),
+            self.loop
+        )
+
+    async def on_upload_progress(self, current: int, total: int):
+        if not self.message:
+            return
+        now = time.time()
+        percent = int((current / total * 100)) if total > 0 else 0
+        if now - self.last_update_time < self.update_interval and percent < 100:
+            return
+        self.last_update_time = now
+        elapsed = max(now - self.start_time, 0.1)
+        speed = current / elapsed
+        eta = (total - current) / speed if speed > 0 and total > current else 0
+        await self._async_edit(current, total, speed, eta, percent)
+
+    async def _async_edit(self, current: int, total: int, speed: float, eta: float, percent: int):
+        if percent == self.last_percent:
+            return
+        self.last_percent = percent
+        bar = make_progress_bar(current, total)
+        cur_str = format_size(current)
+        tot_str = format_size(total) if total > 0 else "Unknown"
+        speed_str = f"{format_size(int(speed))}/s" if speed > 0 else ""
+        eta_str = f" • <b>ETA:</b> {format_eta(eta)}" if eta > 0 else ""
+        speed_line = f"\n⚡ <b>Speed:</b> {speed_str}{eta_str}" if speed_str else ""
+
+        text = (
+            f"⏳ <b>{self.action_title}</b>\n\n"
+            f"<code>[{bar}] {percent}%</code>\n"
+            f"📦 <b>Transferred:</b> {cur_str} / {tot_str}"
+            f"{speed_line}"
+        )
+        try:
+            await self.message.edit(text, parse_mode="html")
+        except Exception:
+            pass
+
+
 # Database helpers
 def init_db():
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -791,98 +874,291 @@ async def handle_watch(request: web.Request):
     mime = record["mime_type"]
     expiry_time_str = format_expiry_date(record["created_at"])
 
-    # If the file is not a video, redirect directly to download
-    if not is_video_file(file_name, mime):
+    is_video = is_video_file(file_name, mime)
+    is_audio = mime.startswith("audio/") or any(file_name.lower().endswith(ext) for ext in [".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".flac"])
+
+    # If the file is neither video nor audio, redirect directly to download
+    if not is_video and not is_audio:
         raise web.HTTPFound(download_url)
 
-    player_html = f"""
-    <video controls autoplay playsinline preload="metadata" style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.4);">
-        <source src="{stream_url}" type="{mime}">
-        Your browser does not support HTML5 video.
-    </video>
-    """
+    safe_file_name = html.escape(file_name)
 
-    html = f"""<!DOCTYPE html>
+    if is_video:
+        player_html = f"""
+        <div class="player-wrapper">
+            <video id="player" playsinline controls preload="metadata">
+                <source src="{stream_url}" type="{mime}">
+                Your browser does not support HTML5 video.
+            </video>
+        </div>
+        """
+    else:
+        player_html = f"""
+        <div class="player-wrapper audio-wrapper">
+            <div class="audio-icon">🎵</div>
+            <audio id="player" controls preload="metadata">
+                <source src="{stream_url}" type="{mime}">
+                Your browser does not support HTML5 audio.
+            </audio>
+        </div>
+        """
+
+    html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{file_name} - Stream & Download</title>
+    <title>{safe_file_name} - Stream & Download</title>
+    <link rel="stylesheet" href="https://cdn.plyr.io/3.7.8/plyr.css" />
     <style>
+        :root {{
+            --plyr-color-main: #3b82f6;
+            --plyr-video-background: #000;
+            --plyr-menu-background: rgba(18, 24, 38, 0.95);
+            --plyr-menu-color: #f3f4f6;
+        }}
+        * {{
+            box-sizing: border-box;
+        }}
         body {{
             margin: 0;
-            padding: 20px;
-            background-color: #0f1117;
+            padding: 24px 12px;
+            background: radial-gradient(circle at top, #141b29 0%, #080b11 100%);
             color: #e5e7eb;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
-            min-height: 90vh;
         }}
         .container {{
-            max-width: 800px;
+            max-width: 920px;
             width: 100%;
-            background: #1a1d24;
-            border: 1px solid #2d3342;
-            border-radius: 12px;
+            background: rgba(20, 26, 38, 0.88);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 18px;
             padding: 24px;
-            box-sizing: border-box;
+            box-shadow: 0 25px 60px rgba(0, 0, 0, 0.65);
+        }}
+        .header {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .tag-pill {{
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 5px 12px;
+            border-radius: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }}
+        .file-title {{
+            margin: 8px 0 14px 0;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #f9fafb;
+            word-break: break-all;
+            line-height: 1.4;
+        }}
+        .meta-pills {{
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 18px;
+        }}
+        .pill {{
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: #9ca3af;
+            font-size: 0.85rem;
+            padding: 5px 12px;
+            border-radius: 8px;
+        }}
+        .player-wrapper {{
+            border-radius: 12px;
+            overflow: hidden;
+            background: #000;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            position: relative;
+        }}
+        .audio-wrapper {{
+            padding: 40px 20px;
+            background: linear-gradient(180deg, #182032 0%, #0c1018 100%);
             text-align: center;
         }}
-        h2 {{
-            margin-top: 0;
-            font-size: 1.3rem;
-            word-break: break-all;
-            color: #60a5fa;
-        }}
-        .meta {{
-            font-size: 0.95rem;
-            color: #9ca3af;
+        .audio-icon {{
+            font-size: 3.5rem;
             margin-bottom: 20px;
-            line-height: 1.6;
+            animation: pulse 2s infinite ease-in-out;
         }}
-        .actions {{
-            margin-top: 24px;
-            display: flex;
-            gap: 12px;
-            justify-content: center;
-            flex-wrap: wrap;
+        @keyframes pulse {{
+            0%, 100% {{ transform: scale(1); opacity: 0.9; }}
+            50% {{ transform: scale(1.08); opacity: 1; }}
+        }}
+        .actions-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            gap: 10px;
+            margin-top: 22px;
         }}
         .btn {{
-            display: inline-block;
-            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 12px 18px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            border-radius: 10px;
+            text-decoration: none;
+            cursor: pointer;
+            border: none;
+            transition: all 0.2s ease;
+        }}
+        .btn-primary {{
             background: #2563eb;
             color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: 600;
-            transition: background 0.2s;
+            box-shadow: 0 4px 14px rgba(37, 99, 235, 0.4);
         }}
-        .btn:hover {{
+        .btn-primary:hover {{
             background: #1d4ed8;
+            transform: translateY(-1px);
         }}
-        .btn-copy {{
+        .btn-secondary {{
+            background: #1f2937;
+            color: #e5e7eb;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }}
+        .btn-secondary:hover {{
             background: #374151;
+            color: white;
         }}
-        .btn-copy:hover {{
-            background: #4b5563;
+        .btn-player {{
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #d1d5db;
+        }}
+        .btn-player:hover {{
+            background: rgba(255, 255, 255, 0.12);
+            color: white;
+        }}
+        .shortcuts {{
+            margin-top: 22px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            display: flex;
+            justify-content: center;
+            flex-wrap: wrap;
+            gap: 16px;
+            font-size: 0.8rem;
+            color: #6b7280;
+        }}
+        .shortcuts kbd {{
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            padding: 2px 6px;
+            color: #9ca3af;
+            font-family: inherit;
         }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h2>📁 {file_name}</h2>
-        <div class="meta">📦 Size: {formatted_size} | 🏷 Type: {mime} | ⏳ Expires: {expiry_time_str}</div>
+        <div class="header">
+            <span class="tag-pill">⚡ FAST STREAMING PLAYER</span>
+            <span style="font-size: 0.85rem; color: #9ca3af;">Resumable MTProto High-Speed Stream</span>
+        </div>
+        <h1 class="file-title">📁 {safe_file_name}</h1>
+        <div class="meta-pills">
+            <span class="pill">📦 {formatted_size}</span>
+            <span class="pill">🏷 {mime}</span>
+            <span class="pill">⏳ Valid until {expiry_time_str}</span>
+        </div>
+
         {player_html}
-        <div class="actions">
-            <a href="{download_url}" class="btn">⬇️ Download File</a>
-            <button onclick="navigator.clipboard.writeText('{download_url}'); alert('Download link copied!');" class="btn btn-copy">📋 Copy Download Link</button>
+
+        <div class="actions-grid">
+            <a href="{download_url}" class="btn btn-primary">
+                <span>⬇️</span> Download File ({formatted_size})
+            </a>
+            <button onclick="copyDownloadLink()" id="copyBtn" class="btn btn-secondary">
+                <span>📋</span> Copy Download Link
+            </button>
+            <a href="vlc://{stream_url}" class="btn btn-player">
+                <span>🎬</span> Open in VLC
+            </a>
+            <a href="intent:{stream_url}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;end" class="btn btn-player">
+                <span>📱</span> Open in MX Player
+            </a>
+            <button onclick="downloadM3U()" class="btn btn-player">
+                <span>🎵</span> Download M3U
+            </button>
+        </div>
+
+        <div class="shortcuts">
+            <span><kbd>Space</kbd> / <kbd>K</kbd> Play/Pause</span>
+            <span><kbd>←</kbd> <kbd>→</kbd> Seek 10s</span>
+            <span><kbd>↑</kbd> <kbd>↓</kbd> Volume</span>
+            <span><kbd>F</kbd> Fullscreen</span>
+            <span><kbd>M</kbd> Mute</span>
+            <span><kbd>0-9</kbd> Jump %</span>
         </div>
     </div>
+
+    <script src="https://cdn.plyr.io/3.7.8/plyr.polyfilled.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {{
+            const player = new Plyr('#player', {{
+                controls: [
+                    'play-large', 'restart', 'rewind', 'play', 'fast-forward',
+                    'progress', 'current-time', 'duration', 'mute', 'volume',
+                    'settings', 'pip', 'airplay', 'fullscreen'
+                ],
+                seekTime: 10,
+                speed: {{ selected: 1, options: [0.5, 0.75, 1, 1.25, 1.5, 2] }},
+                keyboard: {{ focused: true, global: true }},
+                tooltips: {{ controls: true, seek: true }}
+            }});
+        }});
+
+        function copyDownloadLink() {{
+            const url = "{download_url}";
+            navigator.clipboard.writeText(url).then(() => {{
+                const btn = document.getElementById('copyBtn');
+                btn.innerHTML = '<span>✅</span> Link Copied!';
+                setTimeout(() => {{ btn.innerHTML = '<span>📋</span> Copy Download Link'; }}, 2000);
+            }}).catch(() => {{
+                prompt('Copy download link:', url);
+            }});
+        }}
+
+        function downloadM3U() {{
+            const title = {json.dumps(file_name)};
+            const url = "{stream_url}";
+            const content = '#EXTM3U\\n#EXTINF:-1,' + title + '\\n' + url + '\\n';
+            const blob = new Blob([content], {{ type: 'audio/x-mpegurl' }});
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = (title || 'stream') + '.m3u';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }}
+    </script>
 </body>
 </html>"""
-    return web.Response(text=html, content_type="text/html")
+    return web.Response(text=html_content, content_type="text/html")
 
 
 async def handle_debug(request: web.Request):
@@ -1301,7 +1577,7 @@ async def media_handler(event):
                 try:
                     status_msg = await event.reply(
                         f"⏳ <b>Processing link...</b>\n\n"
-                        f"🔍 <i>Downloading media from link (Limit: {MAX_URL_DOWNLOAD_MB} MB)...</i>",
+                        f"🔍 <i>Connecting to media stream (Limit: {MAX_URL_DOWNLOAD_MB} MB)...</i>",
                         parse_mode="html"
                     )
                 except Exception as e:
@@ -1309,7 +1585,8 @@ async def media_handler(event):
 
                 meta = None
                 try:
-                    file_path, meta, err = await download_url_media(url)
+                    dl_tracker = ThrottledProgressTracker(status_msg, "Downloading media from link...")
+                    file_path, meta, err = await download_url_media(url, progress_callback=dl_tracker.on_download_progress)
                     if err:
                         err_text = f"❌ <b>Could not download link:</b>\n{html.escape(err)}"
                         if status_msg:
@@ -1326,29 +1603,21 @@ async def media_handler(event):
                             await event.reply(err_text, parse_mode="html")
                         return
 
-                    if status_msg:
-                        try:
-                            await status_msg.edit(
-                                "⏳ <b>Processing link...</b>\n\n"
-                                "📤 <i>Saving to permanent storage & generating high-speed links...</i>",
-                                parse_mode="html"
-                            )
-                        except Exception:
-                            pass
-
                     target_channel = active_storage
                     if not target_channel or target_channel in [OWNER_ID, 6558775028, -int(f"100{OWNER_ID}")]:
                         target_channel = DEFAULT_STORAGE_CHANNEL
 
                     clean_title = meta.get("title") or "video"
                     storage_msg = None
+                    up_tracker = ThrottledProgressTracker(status_msg, "Saving to permanent storage channel...")
                     try:
                         storage_msg = await client.send_file(
                             target_channel,
                             file=file_path,
                             caption=f"🎥 <b>{html.escape(clean_title[:100])}</b>\n🔗 <i>Source: {html.escape(url[:80])}</i>",
                             parse_mode="html",
-                            supports_streaming=True
+                            supports_streaming=True,
+                            progress_callback=up_tracker.on_upload_progress
                         )
                         storage_chat_id = target_channel
                         storage_message_id = storage_msg.id
@@ -1360,7 +1629,8 @@ async def media_handler(event):
                                 file=file_path,
                                 caption=f"🎥 <b>{html.escape(clean_title[:100])}</b>\n🔗 <i>Source: {html.escape(url[:80])}</i>",
                                 parse_mode="html",
-                                supports_streaming=True
+                                supports_streaming=True,
+                                progress_callback=up_tracker.on_upload_progress
                             )
                             storage_chat_id = DEFAULT_STORAGE_CHANNEL
                             storage_message_id = storage_msg.id

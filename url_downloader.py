@@ -44,9 +44,13 @@ def is_supported_url(url: str) -> bool:
     return bool(url and (url.startswith("http://") or url.startswith("https://")))
 
 
-async def download_url_media(url: str) -> Tuple[Optional[str], Optional[dict], Optional[str]]:
+async def download_url_media(
+    url: str,
+    progress_callback=None
+) -> Tuple[Optional[str], Optional[dict], Optional[str]]:
     """
     Downloads media from URL into a temporary file.
+    Accepts optional progress_callback(current, total, speed, eta).
     Returns: (file_path, metadata_dict, error_message)
     """
     loop = asyncio.get_running_loop()
@@ -54,6 +58,17 @@ async def download_url_media(url: str) -> Tuple[Optional[str], Optional[dict], O
     def _sync_download():
         temp_dir = tempfile.mkdtemp(prefix="f2l_url_")
         outtmpl = os.path.join(temp_dir, "%(title).80s [%(id)s].%(ext)s")
+
+        def _progress_hook(d):
+            if progress_callback and d.get("status") == "downloading":
+                total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+                current = d.get("downloaded_bytes") or 0
+                speed = d.get("speed") or 0
+                eta = d.get("eta") or 0
+                try:
+                    progress_callback(current, total, speed, eta)
+                except Exception:
+                    pass
 
         ydl_opts = {
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best",
@@ -66,6 +81,7 @@ async def download_url_media(url: str) -> Tuple[Optional[str], Optional[dict], O
             "merge_output_format": "mp4",
             "socket_timeout": 30,
             "logger": _QuietLogger(),
+            "progress_hooks": [_progress_hook] if progress_callback else [],
             "extractor_args": {
                 "youtube": {
                     "player_client": ["android", "ios", "mweb"],
