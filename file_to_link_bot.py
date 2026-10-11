@@ -258,21 +258,14 @@ class ThrottledProgressTracker:
         if percent == self.last_percent:
             return
         self.last_percent = percent
-        bar = make_progress_bar(current, total)
         cur_str = format_size(current)
-        tot_str = format_size(total) if total > 0 else "Unknown"
-        speed_str = f"{format_size(int(speed))}/s" if speed > 0 else "evaluating..."
-        eta_line = f"\n▫ <b>ETA</b>         :: <code>{format_eta(eta)}</code>" if eta > 0 else ""
+        tot_str = format_size(total) if total > 0 else ""
+        speed_str = f"{format_size(int(speed))}/s" if speed > 0 else ""
+        eta_str = f" • ETA {format_eta(eta)}" if eta > 0 else ""
+        size_str = f" ({cur_str} of {tot_str})" if tot_str else f" ({cur_str})"
+        stats_line = f"\n<code>{speed_str}{eta_str}</code>" if speed_str else ""
 
-        text = (
-            f"◈ <b>V A U L T</b> │ <i>{self.action_title}</i>\n"
-            f"───────────────────────────\n"
-            f"<code>[{bar}] {percent}%</code>\n"
-            f"▫ <b>Transfer</b>   :: <code>{cur_str} / {tot_str}</code>\n"
-            f"▫ <b>Rate</b>       :: <code>{speed_str}</code>"
-            f"{eta_line}\n"
-            f"───────────────────────────"
-        )
+        text = f"<b>{self.action_title}</b> {percent}%{size_str}{stats_line}".strip()
         try:
             await self.message.edit(text, parse_mode="html")
         except Exception:
@@ -1078,10 +1071,10 @@ async def handle_watch(request: web.Request):
 <body>
     <div class="container">
         <div class="header">
-            <span class="tag-pill">✦ V A U L T │ STREAM ENGINE</span>
-            <span style="font-size: 0.85rem; color: #9ca3af;">Resumable MTProto High-Speed Gateway</span>
+            <span class="tag-pill">File to Link</span>
+            <span style="font-size: 0.85rem; color: #9ca3af;">Direct Stream & Download</span>
         </div>
-        <h1 class="file-title">▫ {safe_file_name}</h1>
+        <h1 class="file-title">{safe_file_name}</h1>
         <div class="meta-pills">
             <span class="pill">📦 {formatted_size}</span>
             <span class="pill">🏷 {mime}</span>
@@ -1224,32 +1217,23 @@ async def callback_activity_tracker(event):
 @client.on(events.NewMessage(pattern="/start"))
 async def start_handler(event):
     sender = await event.get_sender()
-    name = sender.first_name if sender else "User"
+    name = sender.first_name if sender else "there"
     if sender and not getattr(sender, "bot", False):
         register_user(sender.id, sender.first_name or "", sender.username or "")
 
-    owner_cmd = "\n▫ <code>/ownerhelp</code> :: Admin terminal" if (event.sender_id in [OWNER_ID, 6558775028]) else ""
+    owner_cmd = "\n• /ownerhelp - Admin settings" if (event.sender_id in [OWNER_ID, 6558775028]) else ""
     text = (
-        f"✦ <b>V A U L T</b> │ <i>Decentralized Stream Bus</i>\n"
-        f"───────────────────────────\n"
-        f"Operative: <b>{html.escape(name)}</b>\n\n"
-        f"High-throughput media transmission gateway.\n"
-        f"Upload binary files up to <b>2.0 GB</b> or pass video links (YouTube, IG, TikTok, X, Pinterest) for instant stream & direct download generation.\n\n"
-        f"◈ <b>CAPABILITIES</b>\n"
-        f"▫ <b>MTProto Bus</b>    :: Multi-worker parallel streaming (4+ MB/s)\n"
-        f"▫ <b>Web Extractor</b>  :: Up to {MAX_URL_DOWNLOAD_MB} MB safe platform extraction\n"
-        f"▫ <b>Resumable</b>      :: Full HTTP Range & IDM/VLC compatible\n"
-        f"▫ <b>Retention</b>      :: Active for {LINK_EXPIRY_DAYS} days\n\n"
-        f"◈ <b>COMMANDS</b>\n"
-        f"▫ <code>/help</code>       :: Protocol documentation\n"
-        f"▫ <code>/ping</code>       :: Diagnostics & latency\n"
-        f"▫ <code>/id</code>         :: Numerical identity"
-        f"{owner_cmd}\n"
-        f"───────────────────────────\n"
-        f"<i>Transmit any file or paste a URL below to initialize.</i>"
+        f"Hey <b>{html.escape(name)}</b>!\n\n"
+        "Send or forward any file (up to <b>2 GB</b>), or paste a video link from YouTube, Instagram, TikTok, Facebook, Pinterest, or Twitter/X.\n\n"
+        "I'll give you a direct download link and a browser streaming player instantly.\n\n"
+        "<b>Commands:</b>\n"
+        "• /help - How to use\n"
+        "• /ping - Check status\n"
+        "• /id - Your Telegram ID"
+        f"{owner_cmd}"
     )
     buttons = [
-        [Button.url("✦ Architect", f"tg://user?id={OWNER_ID}")]
+        [Button.url("Developer", f"tg://user?id={OWNER_ID}")]
     ]
     await event.reply(text, parse_mode="html", buttons=buttons)
 
@@ -1266,15 +1250,11 @@ async def help_handler(event):
         except Exception:
             register_user(event.sender_id)
     text = (
-        "✦ <b>V A U L T</b> │ <i>Protocol Manual</i>\n"
-        "───────────────────────────\n"
-        "<b>[01]</b> Transmit any binary or media file (up to <b>2.0 GB</b>).\n"
-        f"<b>[02]</b> Or paste any video link (YouTube, IG, TikTok, FB, X up to <b>{MAX_URL_DOWNLOAD_MB} MB</b>).\n"
-        "<b>[03]</b> The gateway captures payload and binds direct stream & download endpoints.\n"
-        "<b>[04]</b> Stream seamlessly in browser or download via IDM, VLC, or MX Player.\n\n"
-        f"▫ <b>Retention Window</b> :: <code>{LINK_EXPIRY_DAYS} Days</code>\n"
-        "▫ <b>Protocol Integrity</b> :: <code>Lossless MTProto</code>\n"
-        "───────────────────────────"
+        "<b>How to use:</b>\n\n"
+        "1. Send or forward any file (up to <b>2 GB</b>) or paste any video link (up to <b>500 MB</b>).\n"
+        "2. You'll receive a direct download link and an online streaming link.\n"
+        "3. Works in browser, VLC, MX Player, and download managers.\n\n"
+        f"Links remain active for <b>{LINK_EXPIRY_DAYS} days</b>."
     )
     await event.reply(text, parse_mode="html")
 
@@ -1290,15 +1270,13 @@ async def id_handler(event):
     chat_id = event.chat_id
     username = f"@{sender.username}" if sender and sender.username else "None"
     text = (
-        f"✦ <b>V A U L T</b> │ <i>Identity Metrics</i>\n"
-        f"───────────────────────────\n"
-        f"▫ <b>Subscriber ID</b> :: <code>{user_id}</code>\n"
-        f"▫ <b>Chat Scope</b>    :: <code>{chat_id}</code>\n"
-        f"▫ <b>Handle</b>        :: <code>{username}</code>\n"
-        f"───────────────────────────"
+        f"<b>Your Info:</b>\n\n"
+        f"• User ID: <code>{user_id}</code>\n"
+        f"• Chat ID: <code>{chat_id}</code>\n"
+        f"• Username: {username}"
     )
     if event.is_channel or event.is_group:
-        text += f"\n<i>Storage binding:</i> <code>BIN_CHANNEL={chat_id}</code>"
+        text += f"\n\nStorage channel ID: <code>BIN_CHANNEL={chat_id}</code>"
     await event.reply(text, parse_mode="html")
 
 
@@ -1314,44 +1292,31 @@ async def ping_handler(event):
         except Exception:
             register_user(event.sender_id)
     t0 = time.time()
-    msg = await event.reply("◈ <i>Pinging bus...</i>")
+    msg = await event.reply("Ping...")
     latency = round((time.time() - t0) * 1000)
-    await msg.edit(
-        f"✦ <b>V A U L T</b> │ <i>Diagnostics</i>\n"
-        f"───────────────────────────\n"
-        f"▫ <b>Latency</b>       :: <code>{latency} ms</code>\n"
-        f"▫ <b>Bus Integrity</b> :: <code>OPTIMAL</code>\n"
-        f"▫ <b>Gateway</b>       :: <code>ONLINE</code>\n"
-        f"───────────────────────────",
-        parse_mode="html"
-    )
+    await msg.edit(f"Pong! (<code>{latency}ms</code>)", parse_mode="html")
 
 
 @client.on(events.NewMessage(pattern=r"^/(ownerhelp|adminhelp)"))
 async def owner_help_handler(event):
     """Show owner control panel and administrative commands."""
     if event.sender_id != OWNER_ID and event.sender_id != 6558775028:
-        await event.reply("⛔ <b>Access Denied:</b> This command is restricted to the bot owner.", parse_mode="html")
+        await event.reply("Access denied.", parse_mode="html")
         return
 
     storage_chan = get_storage_channel()
     text = (
-        "✦ <b>V A U L T</b> │ <i>Command Terminal (Owner)</i>\n"
-        "───────────────────────────\n"
-        "◈ <b>DISPATCH & SUBSCRIBERS</b>\n"
-        "▫ <code>/broadcast &lt;text&gt;</code> :: Dispatch message to all subscribers\n"
-        "▫ <code>/users</code>            :: Registered subscriber manifest\n"
-        "▫ <code>/adduser &lt;id&gt;</code>       :: Authorize subscriber numerical ID\n\n"
-        "◈ <b>STORAGE BINDING</b>\n"
-        f"▫ <code>/setchannel &lt;id&gt;</code>  :: Current Storage: <code>{storage_chan}</code>\n\n"
-        "◈ <b>TELEMETRY</b>\n"
-        "▫ <code>/stats</code>            :: Database metrics & payload volume\n"
-        "▫ <code>/ping</code>             :: Gateway latency diagnostics\n"
-        "───────────────────────────"
+        "<b>Owner Control Panel:</b>\n\n"
+        "• <code>/broadcast &lt;text&gt;</code> - Send message to all users\n"
+        "• <code>/users</code> - List all registered users\n"
+        "• <code>/adduser &lt;id&gt;</code> - Add user ID\n"
+        f"• <code>/setchannel &lt;id&gt;</code> - Set storage channel (current: <code>{storage_chan}</code>)\n"
+        "• <code>/stats</code> - View stats\n"
+        "• <code>/ping</code> - Server status"
     )
     buttons = [
         [
-            Button.inline("◈ View Telemetry", data=b"view_stats")
+            Button.inline("View Stats", data=b"view_stats")
         ]
     ]
     await event.reply(text, parse_mode="html", buttons=buttons)
@@ -1506,15 +1471,13 @@ async def stats_handler(event):
     formatted_total_size = format_size(total_bytes)
 
     text = (
-        "✦ <b>V A U L T</b> │ <i>Global Telemetry</i>\n"
-        "───────────────────────────\n"
-        f"▫ <b>Subscribers</b>     :: <code>{total_users}</code>\n"
-        f"▫ <b>Payloads Stored</b> :: <code>{total_files}</code>\n"
-        f"▫ <b>Total Volume</b>    :: <code>{formatted_total_size}</code>\n"
-        f"▫ <b>Storage Bus</b>     :: <code>{storage_chan}</code>\n"
-        f"▫ <b>Public Gateway</b>  :: <code>{get_server_url()}</code>\n"
-        f"▫ <b>TTL Window</b>      :: <code>{LINK_EXPIRY_DAYS} Days</code>\n"
-        "───────────────────────────"
+        "<b>Bot Statistics:</b>\n\n"
+        f"• Users: <code>{total_users}</code>\n"
+        f"• Files: <code>{total_files}</code>\n"
+        f"• Total Size: <code>{formatted_total_size}</code>\n"
+        f"• Storage Channel: <code>{storage_chan}</code>\n"
+        f"• Server: <code>{get_server_url()}</code>\n"
+        f"• Link Expiry: <code>{LINK_EXPIRY_DAYS} days</code>"
     )
     await event.reply(text, parse_mode="html")
 
@@ -1591,27 +1554,16 @@ async def media_handler(event):
             if url:
                 status_msg = None
                 try:
-                    status_msg = await event.reply(
-                        f"◈ <b>V A U L T</b> │ <i>Connecting to Media Stream...</i>\n"
-                        f"───────────────────────────\n"
-                        f"▫ <b>Ceiling</b>  :: <code>{MAX_URL_DOWNLOAD_MB} MB</code>\n"
-                        f"───────────────────────────",
-                        parse_mode="html"
-                    )
+                    status_msg = await event.reply("⏳ <i>Downloading link...</i>", parse_mode="html")
                 except Exception as e:
                     print(f"[ERROR] Could not send initial link status: {e}", file=sys.stderr)
 
                 meta = None
                 try:
-                    dl_tracker = ThrottledProgressTracker(status_msg, "Ingesting Payload...")
+                    dl_tracker = ThrottledProgressTracker(status_msg, "Downloading...")
                     file_path, meta, err = await download_url_media(url, progress_callback=dl_tracker.on_download_progress)
                     if err:
-                        err_text = (
-                            f"◈ <b>V A U L T</b> │ <i>Ingestion Failure</i>\n"
-                            f"───────────────────────────\n"
-                            f"<code>{html.escape(err)}</code>\n"
-                            f"───────────────────────────"
-                        )
+                        err_text = f"❌ Error: <code>{html.escape(err)}</code>"
                         if status_msg:
                             await status_msg.edit(err_text, parse_mode="html")
                         else:
@@ -1619,12 +1571,7 @@ async def media_handler(event):
                         return
 
                     if not file_path or not meta:
-                        err_text = (
-                            "◈ <b>V A U L T</b> │ <i>Ingestion Failure</i>\n"
-                            "───────────────────────────\n"
-                            "<code>Could not extract media from link.</code>\n"
-                            "───────────────────────────"
-                        )
+                        err_text = "❌ Error: <code>Could not extract media from link.</code>"
                         if status_msg:
                             await status_msg.edit(err_text, parse_mode="html")
                         else:
@@ -1637,7 +1584,7 @@ async def media_handler(event):
 
                     clean_title = meta.get("title") or "video"
                     storage_msg = None
-                    up_tracker = ThrottledProgressTracker(status_msg, "Archiving to Permanent Storage...")
+                    up_tracker = ThrottledProgressTracker(status_msg, "Uploading...")
                     try:
                         storage_msg = await client.send_file(
                             target_channel,
@@ -1691,23 +1638,17 @@ async def media_handler(event):
                     download_link = f"{base_url}/download/{file_hash}"
                     watch_link = f"{base_url}/watch/{file_hash}"
                     formatted_size = format_size(file_size)
-                    expiry_str = format_expiry_date(now_ts)
 
                     reply_text = (
-                        f"✦ <b>V A U L T</b> │ <i>Transmission Ready</i>\n"
-                        f"───────────────────────────\n"
-                        f"▫ <b>Payload</b>   :: <code>{html.escape(file_name)}</code>\n"
-                        f"▫ <b>Volume</b>    :: <code>{formatted_size}</code>\n"
-                        f"▫ <b>Codec</b>     :: <code>{mime_type}</code>\n"
-                        f"▫ <b>Retention</b> :: <code>{LINK_EXPIRY_DAYS} Days (Expires: {expiry_str})</code>\n"
-                        f"───────────────────────────\n"
-                        f"⚡ <b>STREAM</b>   :: {watch_link}\n"
-                        f"⬇️ <b>DIRECT</b>   :: {download_link}\n"
-                        f"───────────────────────────"
+                        f"<b>{html.escape(file_name)}</b>\n\n"
+                        f"Size: <code>{formatted_size}</code>\n"
+                        f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                        f"<b>Stream:</b>\n{watch_link}\n\n"
+                        f"<b>Download:</b>\n{download_link}"
                     )
                     buttons = [
-                        [Button.url("⚡ Stream Online", watch_link)],
-                        [Button.url("⬇️ Direct Download", download_link)],
+                        [Button.url("Watch Online", watch_link)],
+                        [Button.url("Download", download_link)],
                     ]
 
                     if status_msg:
@@ -1717,12 +1658,7 @@ async def media_handler(event):
 
                 except Exception as link_err:
                     print(f"[ERROR processing URL] {link_err}", file=sys.stderr)
-                    err_msg = (
-                        f"◈ <b>V A U L T</b> │ <i>Processing Error</i>\n"
-                        f"───────────────────────────\n"
-                        f"<code>{html.escape(str(link_err)[:150])}</code>\n"
-                        f"───────────────────────────"
-                    )
+                    err_msg = f"❌ Error: <code>{html.escape(str(link_err)[:150])}</code>"
                     if status_msg:
                         try:
                             await status_msg.edit(err_msg, parse_mode="html")
@@ -1736,19 +1672,14 @@ async def media_handler(event):
                 return
 
             msg = (
-                "✦ <b>V A U L T</b> │ <i>Awaiting Transmission</i>\n"
-                "───────────────────────────\n"
-                "▫ Transmit any <b>file or video</b> up to 2.0 GB.\n"
-                f"▫ Or paste a <b>video link</b> (YouTube, Instagram, TikTok, X, Reddit) up to {MAX_URL_DOWNLOAD_MB} MB.\n\n"
-                "<i>Lossless direct stream and download endpoints will be synthesized immediately.</i>\n"
-                "───────────────────────────"
+                "Send or forward any file (up to <b>2 GB</b>), or paste a video link to generate direct download & stream links."
             )
             await event.reply(msg, parse_mode="html")
         return
 
     status_msg = None
     try:
-        status_msg = await event.reply("◈ <b>V A U L T</b> │ <i>Synthesizing Endpoints...</i>", parse_mode="html")
+        status_msg = await event.reply("⚡ <i>Generating links...</i>", parse_mode="html")
     except Exception as e:
         print(f"[ERROR] Could not send initial status: {e}", file=sys.stderr)
 
@@ -1780,59 +1711,43 @@ async def media_handler(event):
         download_link = f"{base_url}/download/{file_hash}"
         watch_link = f"{base_url}/watch/{file_hash}"
         formatted_size = format_size(file_size)
-        expiry_str = format_expiry_date(now_ts)
 
         is_video = is_video_file(file_name, mime_type, event.message)
         is_audio = mime_type.startswith("audio/")
 
         if is_video:
             reply_text = (
-                f"✦ <b>V A U L T</b> │ <i>Transmission Ready</i>\n"
-                f"───────────────────────────\n"
-                f"▫ <b>Payload</b>   :: <code>{html.escape(file_name)}</code>\n"
-                f"▫ <b>Volume</b>    :: <code>{formatted_size}</code>\n"
-                f"▫ <b>Codec</b>     :: <code>{mime_type}</code>\n"
-                f"▫ <b>Retention</b> :: <code>{LINK_EXPIRY_DAYS} Days (Expires: {expiry_str})</code>\n"
-                f"───────────────────────────\n"
-                f"⚡ <b>STREAM</b>   :: {watch_link}\n"
-                f"⬇️ <b>DIRECT</b>   :: {download_link}\n"
-                f"───────────────────────────"
+                f"<b>{html.escape(file_name)}</b>\n\n"
+                f"Size: <code>{formatted_size}</code>\n"
+                f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"<b>Stream:</b>\n{watch_link}\n\n"
+                f"<b>Download:</b>\n{download_link}"
             )
             buttons = [
-                [Button.url("⚡ Stream Online", watch_link)],
-                [Button.url("⬇️ Direct Download", download_link)],
+                [Button.url("Watch Online", watch_link)],
+                [Button.url("Download", download_link)],
             ]
         elif is_audio:
             reply_text = (
-                f"✦ <b>V A U L T</b> │ <i>Transmission Ready</i>\n"
-                f"───────────────────────────\n"
-                f"▫ <b>Payload</b>   :: <code>{html.escape(file_name)}</code>\n"
-                f"▫ <b>Volume</b>    :: <code>{formatted_size}</code>\n"
-                f"▫ <b>Codec</b>     :: <code>{mime_type}</code>\n"
-                f"▫ <b>Retention</b> :: <code>{LINK_EXPIRY_DAYS} Days (Expires: {expiry_str})</code>\n"
-                f"───────────────────────────\n"
-                f"⚡ <b>STREAM</b>   :: {watch_link}\n"
-                f"⬇️ <b>DIRECT</b>   :: {download_link}\n"
-                f"───────────────────────────"
+                f"<b>{html.escape(file_name)}</b>\n\n"
+                f"Size: <code>{formatted_size}</code>\n"
+                f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"<b>Stream:</b>\n{watch_link}\n\n"
+                f"<b>Download:</b>\n{download_link}"
             )
             buttons = [
-                [Button.url("⚡ Stream Audio", watch_link)],
-                [Button.url("⬇️ Direct Download", download_link)],
+                [Button.url("Listen Online", watch_link)],
+                [Button.url("Download", download_link)],
             ]
         else:
             reply_text = (
-                f"✦ <b>V A U L T</b> │ <i>Transmission Ready</i>\n"
-                f"───────────────────────────\n"
-                f"▫ <b>Payload</b>   :: <code>{html.escape(file_name)}</code>\n"
-                f"▫ <b>Volume</b>    :: <code>{formatted_size}</code>\n"
-                f"▫ <b>Codec</b>     :: <code>{mime_type}</code>\n"
-                f"▫ <b>Retention</b> :: <code>{LINK_EXPIRY_DAYS} Days (Expires: {expiry_str})</code>\n"
-                f"───────────────────────────\n"
-                f"⬇️ <b>DIRECT</b>   :: {download_link}\n"
-                f"───────────────────────────"
+                f"<b>{html.escape(file_name)}</b>\n\n"
+                f"Size: <code>{formatted_size}</code>\n"
+                f"Expires: <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"<b>Download:</b>\n{download_link}"
             )
             buttons = [
-                [Button.url("⬇️ Direct Download", download_link)],
+                [Button.url("Download", download_link)],
             ]
 
         if status_msg:
@@ -1841,12 +1756,7 @@ async def media_handler(event):
             await event.reply(reply_text, parse_mode="html", buttons=buttons)
     except Exception as e:
         print(f"[ERROR in media_handler] {e}", file=sys.stderr)
-        err_msg = (
-            f"◈ <b>V A U L T</b> │ <i>Synthesis Error</i>\n"
-            f"───────────────────────────\n"
-            f"<code>{html.escape(str(e))}</code>\n"
-            f"───────────────────────────"
-        )
+        err_msg = f"❌ Error: <code>{html.escape(str(e))}</code>"
         if status_msg:
             try:
                 await status_msg.edit(err_msg, parse_mode="html")
