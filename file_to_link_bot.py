@@ -27,6 +27,8 @@ from dotenv import load_dotenv
 
 from aiohttp import web
 from telethon import TelegramClient, events, Button
+from telethon.sessions import StringSession
+from telethon.errors.rpcerrorlist import FloodWaitError
 from telethon.tl.types import (
     DocumentAttributeFilename,
     DocumentAttributeVideo,
@@ -189,7 +191,9 @@ def init_db():
             file_name TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             mime_type TEXT NOT NULL,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            orig_chat_id INTEGER DEFAULT 0,
+            orig_msg_id INTEGER DEFAULT 0
         )
     """)
     cursor.execute("""
@@ -334,8 +338,23 @@ def is_video_file(file_name: Optional[str], mime_type: Optional[str], message=No
     return False
 
 
-# Telethon Client
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+# Telethon Client (Uses StringSession to avoid MTProto authorization FloodWait on cloud restarts)
+DEFAULT_SESSION_STRING = "1BVtsOJsBu1tB1hMluWUPWJ3LepVQ-YOVvQmrg-7xI_nesOmO_XN7ZTHHyEWT9fqFDvfWas6858hcF0hxw_saGOkFkNBGKBqcY327wrWDVva1FhK6__On7TLJrrurDWA1xD8R-xHXDFL3TUHW6x0mUSKbmXnQ87oQ43w00VymgqKZPbzq0qjCfAGa5jmc4lUSzY_N-xU74WRONCNdVJNfVx7y6RHIJL_xoRoQIF0OMPCiEyQY-RLtLILLEdndOBRiVuhRTT9_evAb1eDwdBa5UIZLUKK2X7hvzEcl2TK0F65uYm4E3NHJ7aCWOsHIC55ec3zNxrAR6y5nCh9zHOSql3r6hveBsLY="
+SESSION_STRING = os.getenv("SESSION_STRING", DEFAULT_SESSION_STRING).strip()
+
+if SESSION_STRING:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+else:
+    client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+
+
+async def start_telegram_client():
+    if SESSION_STRING:
+        await client.connect()
+        if not await client.is_user_authorized():
+            await client.start(bot_token=BOT_TOKEN)
+    else:
+        await client.start(bot_token=BOT_TOKEN)
 
 
 async def backup_to_storage_channel(message) -> Tuple[int, int]:
@@ -811,7 +830,7 @@ async def set_channel_handler(event):
 
 @client.on(events.NewMessage)
 async def media_handler(event):
-    if not event.media or event.text.startswith("/"):
+    if not event.media or (event.text and event.text.startswith("/")):
         return
 
     # Ignore files posted directly inside the storage channel itself
@@ -819,69 +838,91 @@ async def media_handler(event):
     if active_storage and event.chat_id == active_storage:
         return
 
-    status_msg = await event.reply("⏳ <i>Generating links...</i>", parse_mode="html")
+    status_msg = None
+    try:
+        status_msg = await event.reply("⏳ <i>Generating links...</i>", parse_mode="html")
+    except Exception as e:
+        print(f"[ERROR] Could not send initial status: {e}", file=sys.stderr)
 
-    file_name, file_size, mime_type = extract_media_meta(event.message)
-    file_hash = secrets.token_urlsafe(8)
-    now_ts = int(time.time())
+    try:
+        file_name, file_size, mime_type = extract_media_meta(event.message)
+        file_hash = secrets.token_urlsafe(8)
+        now_ts = int(time.time())
 
-    # Backup to permanent storage channel if configured
-    storage_chat_id, storage_message_id = await backup_to_storage_channel(event.message)
+        # Backup to permanent storage channel if configured
+        storage_chat_id, storage_message_id = await backup_to_storage_channel(event.message)
 
-    save_file_record(
-        file_hash=file_hash,
-        chat_id=storage_chat_id,
-        message_id=storage_message_id,
-        file_name=file_name,
-        file_size=file_size,
-        mime_type=mime_type,
-        orig_chat_id=event.chat_id,
-        orig_msg_id=event.message.id
-    )
-
-    base_url = get_server_url()
-    download_link = f"{base_url}/download/{file_hash}"
-    watch_link = f"{base_url}/watch/{file_hash}"
-    formatted_size = format_size(file_size)
-    expiry_str = format_expiry_date(now_ts)
-
-    is_video = is_video_file(file_name, mime_type, event.message)
-
-    if is_video:
-        reply_text = (
-            f"✅ <b>File Link Generated!</b>\n\n"
-            f"📁 <b>Name:</b> <code>{file_name}</code>\n"
-            f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
-            f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
-            f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
-            f"📥 <b>Direct Download Link:</b>\n{download_link}\n\n"
-            f"🎬 <b>Online Stream / Watch:</b>\n{watch_link}"
+        save_file_record(
+            file_hash=file_hash,
+            chat_id=storage_chat_id,
+            message_id=storage_message_id,
+            file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
+            orig_chat_id=event.chat_id,
+            orig_msg_id=event.message.id
         )
-        buttons = [
-            [Button.url("📥 Direct Download", download_link)],
-            [Button.url("🎬 Stream / Watch Online", watch_link)],
-        ]
-    else:
-        reply_text = (
-            f"✅ <b>File Link Generated!</b>\n\n"
-            f"📁 <b>Name:</b> <code>{file_name}</code>\n"
-            f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
-            f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
-            f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
-            f"📥 <b>Direct Download Link:</b>\n{download_link}"
-        )
-        buttons = [
-            [Button.url("📥 Direct Download", download_link)],
-        ]
 
-    await status_msg.edit(reply_text, parse_mode="html", buttons=buttons)
+        base_url = get_server_url()
+        download_link = f"{base_url}/download/{file_hash}"
+        watch_link = f"{base_url}/watch/{file_hash}"
+        formatted_size = format_size(file_size)
+        expiry_str = format_expiry_date(now_ts)
+
+        is_video = is_video_file(file_name, mime_type, event.message)
+
+        if is_video:
+            reply_text = (
+                f"✅ <b>File Link Generated!</b>\n\n"
+                f"📁 <b>Name:</b> <code>{file_name}</code>\n"
+                f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
+                f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
+                f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
+                f"📥 <b>Direct Download Link:</b>\n{download_link}\n\n"
+                f"🎬 <b>Online Stream / Watch:</b>\n{watch_link}"
+            )
+            buttons = [
+                [Button.url("📥 Direct Download", download_link)],
+                [Button.url("🎬 Stream / Watch Online", watch_link)],
+            ]
+        else:
+            reply_text = (
+                f"✅ <b>File Link Generated!</b>\n\n"
+                f"📁 <b>Name:</b> <code>{file_name}</code>\n"
+                f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
+                f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
+                f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
+                f"📥 <b>Direct Download Link:</b>\n{download_link}"
+            )
+            buttons = [
+                [Button.url("📥 Direct Download", download_link)],
+            ]
+
+        if status_msg:
+            await status_msg.edit(reply_text, parse_mode="html", buttons=buttons)
+        else:
+            await event.reply(reply_text, parse_mode="html", buttons=buttons)
+    except Exception as e:
+        print(f"[ERROR in media_handler] {e}", file=sys.stderr)
+        err_msg = f"❌ <b>Error generating links:</b> <code>{e}</code>"
+        if status_msg:
+            try:
+                await status_msg.edit(err_msg, parse_mode="html")
+            except Exception:
+                await event.reply(err_msg, parse_mode="html")
+        else:
+            await event.reply(err_msg, parse_mode="html")
 
 
 # --- CLI Commands ---
 async def cli_send_message(text: str, target_chat: int = OWNER_ID):
-    from telethon.sessions import MemorySession
-    cli_client = TelegramClient(MemorySession(), API_ID, API_HASH)
-    await cli_client.start(bot_token=BOT_TOKEN)
+    if SESSION_STRING:
+        cli_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+        await cli_client.connect()
+    else:
+        from telethon.sessions import MemorySession
+        cli_client = TelegramClient(MemorySession(), API_ID, API_HASH)
+        await cli_client.start(bot_token=BOT_TOKEN)
     await cli_client.send_message(target_chat, text, parse_mode="html")
     print(f"[SUCCESS] Message sent to {target_chat}!")
     await cli_client.disconnect()
@@ -892,9 +933,13 @@ async def cli_send_file(file_path: str, caption: str = "", target_chat: int = OW
         print(f"[ERROR] File '{file_path}' not found!", file=sys.stderr)
         return
 
-    from telethon.sessions import MemorySession
-    cli_client = TelegramClient(MemorySession(), API_ID, API_HASH)
-    await cli_client.start(bot_token=BOT_TOKEN)
+    if SESSION_STRING:
+        cli_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+        await cli_client.connect()
+    else:
+        from telethon.sessions import MemorySession
+        cli_client = TelegramClient(MemorySession(), API_ID, API_HASH)
+        await cli_client.start(bot_token=BOT_TOKEN)
     print(f"[*] Uploading '{file_path}' to chat {target_chat}...")
     msg = await cli_client.send_file(target_chat, file_path, caption=caption or f"Uploaded: {os.path.basename(file_path)}")
 
@@ -939,7 +984,12 @@ async def run_server():
     base_url = await init_public_url()
 
     # Start Telethon Bot
-    await client.start(bot_token=BOT_TOKEN)
+    try:
+        await start_telegram_client()
+    except FloodWaitError as fe:
+        print(f"[!] Telegram FloodWait on login: sleeping {fe.seconds} seconds...", file=sys.stderr)
+        await asyncio.sleep(fe.seconds)
+        await start_telegram_client()
     me = await client.get_me()
 
     active_chan = get_storage_channel()
