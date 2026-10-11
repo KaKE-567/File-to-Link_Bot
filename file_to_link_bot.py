@@ -407,6 +407,15 @@ async def backup_to_storage_channel(message) -> Tuple[int, int]:
     except Exception as err:
         print(f"[STORAGE CHANNEL TELETHON ERROR] Telethon forward failed: {err}", file=sys.stderr)
 
+    # 3. Direct send_file fallback
+    try:
+        sent = await client.send_file(target_channel, file=message.media)
+        if sent:
+            print(f"[STORAGE CHANNEL] Telethon send_file successful to {target_channel} (ID: {sent.id})")
+            return target_channel, sent.id
+    except Exception as err:
+        print(f"[STORAGE CHANNEL TELETHON ERROR] Telethon send_file failed: {err}", file=sys.stderr)
+
     return message.chat_id, message.id
 
 
@@ -830,12 +839,33 @@ async def set_channel_handler(event):
 
 @client.on(events.NewMessage)
 async def media_handler(event):
-    if not event.media or (event.text and event.text.startswith("/")):
+    # Ignore bot commands (handled by respective command handlers)
+    if event.text and event.text.startswith("/"):
         return
 
     # Ignore files posted directly inside the storage channel itself
     active_storage = get_storage_channel()
     if active_storage and event.chat_id == active_storage:
+        return
+
+    # If message has no media attached
+    if not event.media:
+        if event.is_private:
+            text = (event.text or "").strip()
+            if any(p in text.lower() for p in ["http://", "https://", "www.", "instagram.com", "tiktok.com", "youtu.be", "youtube.com"]):
+                msg = (
+                    "⚠️ <b>Web Link Detected!</b>\n\n"
+                    "This bot generates direct stream & download links for <b>Telegram media files</b>, not external web links.\n\n"
+                    "👉 <b>How to use:</b>\n"
+                    "• Forward or upload an actual <b>video, audio, or document file</b> from Telegram.\n"
+                    "• The bot will instantly generate a high-speed stream and direct download link for your channel and friends!"
+                )
+            else:
+                msg = (
+                    "ℹ️ <b>Please send or forward a media file!</b>\n\n"
+                    "Send or forward any file (video, document, audio, photo, apk, archive) up to 2 GB to generate direct links."
+                )
+            await event.reply(msg, parse_mode="html")
         return
 
     status_msg = None
