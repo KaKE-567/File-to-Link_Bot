@@ -238,13 +238,13 @@ def get_storage_channel():
     env_chan = os.getenv("BIN_CHANNEL", "").strip()
     if env_chan:
         parsed = parse_channel_target(env_chan)
-        if parsed:
+        if parsed and parsed != OWNER_ID:
             return parsed
 
     saved_chan = get_setting("bin_channel")
     if saved_chan:
         parsed = parse_channel_target(saved_chan)
-        if parsed:
+        if parsed and parsed != OWNER_ID:
             return parsed
 
     return DEFAULT_STORAGE_CHANNEL
@@ -892,6 +892,13 @@ async def media_handler(event):
             orig_chat_id=event.chat_id,
             orig_msg_id=event.message.id
         )
+
+        # Delete original uploaded media from private bot chat so the file ONLY goes to Meowmeow group
+        if event.is_private and storage_chat_id != event.chat_id:
+            try:
+                await event.delete()
+            except Exception as e:
+                print(f"[NOTE] Could not delete original private message: {e}")
 
         base_url = get_server_url()
         download_link = f"{base_url}/download/{file_hash}"
