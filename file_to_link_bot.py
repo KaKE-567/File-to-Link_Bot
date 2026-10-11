@@ -897,13 +897,6 @@ async def media_handler(event):
             orig_msg_id=event.message.id
         )
 
-        # Delete user's uploaded file from private bot chat so it ONLY goes to Meowmeow group!
-        if event.is_private and storage_chat_id == active_storage:
-            try:
-                await event.delete()
-            except Exception as e:
-                print(f"[NOTE] Could not delete original private message: {e}")
-
         base_url = get_server_url()
         download_link = f"{base_url}/download/{file_hash}"
         watch_link = f"{base_url}/watch/{file_hash}"
