@@ -46,12 +46,25 @@ API_HASH = os.getenv("API_HASH", "da981346b2708e5f8fefeee726b7bfd1").strip()
 PORT = int(os.getenv("PORT", "8080"))
 BIND_ADDRESS = os.getenv("BIND_ADDRESS", "0.0.0.0")
 SERVER_URL = os.getenv("SERVER_URL", "").strip().rstrip("/")
+LINK_EXPIRY_DAYS = int(os.getenv("LINK_EXPIRY_DAYS", "3"))
+LINK_EXPIRY_SECONDS = LINK_EXPIRY_DAYS * 86400  # Default 3 days in seconds
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "file_store.db")
 SESSION_NAME = os.path.join(os.path.dirname(__file__), "file_to_link_bot")
 
 CURRENT_PUBLIC_URL = ""
 tunnel_process = None
+
+
+def is_expired(created_at: int) -> bool:
+    """Check if a file link has expired."""
+    return (time.time() - created_at) > LINK_EXPIRY_SECONDS
+
+
+def format_expiry_date(created_at: int) -> str:
+    """Format expiration timestamp to human-readable UTC string."""
+    expiry_timestamp = created_at + LINK_EXPIRY_SECONDS
+    return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(expiry_timestamp))
 
 
 async def init_public_url() -> str:
@@ -209,7 +222,14 @@ async def stream_media_response(request: web.Request, as_attachment: bool = Fals
     file_hash = request.match_info.get("file_hash", "")
     record = get_file_record(file_hash)
     if not record:
-        return web.Response(status=404, text="404: File not found or expired.")
+        return web.Response(status=404, text="404: File not found.")
+
+    if is_expired(record["created_at"]):
+        return web.Response(
+            status=410,
+            text=f"410 Gone: This link has expired (links are valid for {LINK_EXPIRY_DAYS} days). Please generate a new link via the Telegram bot.",
+            content_type="text/plain"
+        )
 
     try:
         msg = await client.get_messages(record["chat_id"], ids=record["message_id"])
@@ -314,12 +334,82 @@ async def handle_watch(request: web.Request):
     if not record:
         return web.Response(status=404, text="404: File not found.")
 
+    if is_expired(record["created_at"]):
+        expired_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Link Expired - File To Link Bot</title>
+    <style>
+        body {{
+            margin: 0;
+            padding: 20px;
+            background-color: #0f1117;
+            color: #e5e7eb;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 90vh;
+        }}
+        .container {{
+            max-width: 500px;
+            width: 100%;
+            background: #1a1d24;
+            border: 1px solid #ef4444;
+            border-radius: 12px;
+            padding: 32px 24px;
+            box-sizing: border-box;
+            text-align: center;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 6px 14px;
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }}
+        h2 {{
+            color: #ef4444;
+            margin-top: 0;
+            margin-bottom: 12px;
+        }}
+        p {{
+            color: #9ca3af;
+            line-height: 1.5;
+            margin: 8px 0;
+        }}
+        a {{
+            color: #60a5fa;
+            text-decoration: none;
+        }}
+        a:hover {{
+            text-decoration: underline;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="badge">⏰ Link Expired</div>
+        <h2>Link Has Expired</h2>
+        <p>This stream and download link was valid for <b>{LINK_EXPIRY_DAYS} days</b> and has expired.</p>
+        <p>To access this file again, send or forward it to <a href="https://t.me/Filetolink_kakebot">@Filetolink_kakebot</a> on Telegram to generate a fresh link.</p>
+    </div>
+</body>
+</html>"""
+        return web.Response(text=expired_html, content_type="text/html", status=410)
+
     base_url = get_server_url()
     stream_url = f"{base_url}/stream/{file_hash}"
     download_url = f"{base_url}/download/{file_hash}"
     file_name = record["file_name"]
     formatted_size = format_size(record["file_size"])
     mime = record["mime_type"]
+    expiry_time_str = format_expiry_date(record["created_at"])
 
     is_video = "video" in mime
     is_audio = "audio" in mime
@@ -389,6 +479,7 @@ async def handle_watch(request: web.Request):
             font-size: 0.95rem;
             color: #9ca3af;
             margin-bottom: 20px;
+            line-height: 1.6;
         }}
         .actions {{
             margin-top: 24px;
@@ -421,7 +512,7 @@ async def handle_watch(request: web.Request):
 <body>
     <div class="container">
         <h2>📁 {file_name}</h2>
-        <div class="meta">📦 Size: {formatted_size} | 🏷 Type: {mime}</div>
+        <div class="meta">📦 Size: {formatted_size} | 🏷 Type: {mime} | ⏳ Expires: {expiry_time_str}</div>
         {player_html}
         <div class="actions">
             <a href="{download_url}" class="btn">⬇️ Download File</a>
@@ -456,7 +547,8 @@ async def start_handler(event):
         f"• Supports files up to <b>2 GB</b> (and 4 GB for Premium)\n"
         f"• Instant Streaming & Web Player\n"
         f"• Resume-supported direct download links\n"
-        f"• IDM & Download Manager compatible\n\n"
+        f"• IDM & Download Manager compatible\n"
+        f"• Links valid for <b>{LINK_EXPIRY_DAYS} days</b>\n\n"
         f"<b>Commands:</b>\n"
         f"• /help - How to use\n"
         f"• /id - Check your Telegram ID\n"
@@ -476,7 +568,8 @@ async def help_handler(event):
         "📖 <b>How to Use:</b>\n\n"
         "1. Send or forward any file to this bot.\n"
         "2. The bot generates both a <b>Direct Download Link</b> and a <b>Stream / Watch</b> link.\n"
-        "3. You can paste the link in your browser, VLC media player, or any download manager.\n\n"
+        "3. You can paste the link in your browser, VLC media player, or any download manager.\n"
+        f"4. Links remain active for <b>{LINK_EXPIRY_DAYS} days</b>.\n\n"
         "⚡ <i>Powered by Telegram MTProto streaming — no 20 MB limits!</i>"
     )
     await event.reply(text, parse_mode="html")
@@ -514,6 +607,7 @@ async def media_handler(event):
 
     file_name, file_size, mime_type = extract_media_meta(event.message)
     file_hash = secrets.token_urlsafe(8)
+    now_ts = int(time.time())
 
     save_file_record(
         file_hash=file_hash,
@@ -528,12 +622,14 @@ async def media_handler(event):
     download_link = f"{base_url}/download/{file_hash}"
     watch_link = f"{base_url}/watch/{file_hash}"
     formatted_size = format_size(file_size)
+    expiry_str = format_expiry_date(now_ts)
 
     reply_text = (
         f"✅ <b>File Link Generated!</b>\n\n"
         f"📁 <b>Name:</b> <code>{file_name}</code>\n"
         f"📦 <b>Size:</b> <code>{formatted_size}</code>\n"
-        f"🏷 <b>Type:</b> <code>{mime_type}</code>\n\n"
+        f"🏷 <b>Type:</b> <code>{mime_type}</code>\n"
+        f"⏳ <b>Validity:</b> {LINK_EXPIRY_DAYS} Days (Expires: <code>{expiry_str}</code>)\n\n"
         f"📥 <b>Direct Download Link:</b>\n{download_link}\n\n"
         f"🎬 <b>Online Stream / Watch:</b>\n{watch_link}"
     )
@@ -569,6 +665,7 @@ async def cli_send_file(file_path: str, caption: str = "", target_chat: int = OW
 
     file_name, file_size, mime_type = extract_media_meta(msg)
     file_hash = secrets.token_urlsafe(8)
+    now_ts = int(time.time())
     save_file_record(
         file_hash=file_hash,
         chat_id=target_chat,
@@ -581,10 +678,12 @@ async def cli_send_file(file_path: str, caption: str = "", target_chat: int = OW
     base_url = get_server_url()
     download_link = f"{base_url}/download/{file_hash}"
     watch_link = f"{base_url}/watch/{file_hash}"
+    expiry_str = format_expiry_date(now_ts)
 
     print(f"[SUCCESS] File uploaded! Message ID: {msg.id}")
     print(f"Download Link: {download_link}")
     print(f"Watch Link:    {watch_link}")
+    print(f"Expires:       {expiry_str} ({LINK_EXPIRY_DAYS} days)")
     await cli_client.disconnect()
 
 

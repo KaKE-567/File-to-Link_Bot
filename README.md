@@ -9,6 +9,7 @@ Converts any file sent on Telegram into a direct, high-speed download link and a
 ## ✨ Features
 
 - **No 20 MB File Limit:** Supports files up to **2 GB / 4 GB** using Telegram's native MTProto protocol.
+- **Link Expiration (3 Days):** Generated links automatically expire after 3 days with a user-friendly expiration notice (configurable via `LINK_EXPIRY_DAYS`).
 - **High-Speed Streaming:** C-accelerated decryption (`cryptg`) and 1 MB chunk pipelining for maximum throughput.
 - **HTTP Range Support:** Full seeking support for video players and multi-threaded downloading (IDM, 1DM, ADM, aria2, FDM).
 - **Online Web Player:** Built-in web player page to watch videos and play audio directly in the browser without downloading first.
