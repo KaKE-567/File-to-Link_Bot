@@ -1640,18 +1640,18 @@ async def media_handler(event):
                     formatted_size = format_size(file_size)
 
                     reply_text = (
-                        f"🎬 <b>{html.escape(file_name)}</b>\n\n"
-                        f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
-                        f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                        f"🍿 <b>Stream Online:</b>\n"
+                        f"✅ <b>Media Link Generated!</b>\n\n"
+                        f"📄 <b>Name:</b> <code>{html.escape(file_name)}</code>\n"
+                        f"📦 <b>Size:</b> <code>{formatted_size}</code>\n\n"
+                        f"🎬 <b>Stream / Watch Online:</b>\n"
                         f"{watch_link}\n\n"
-                        f"⚡ <b>Fast Download:</b>\n"
+                        f"📥 <b>Direct Download Link:</b>\n"
                         f"{download_link}\n\n"
-                        f"<i>🚀 High-speed MTProto • Play in browser or VLC / MX Player</i>"
+                        f"<i>⚡ High-Speed MTProto • Fast & Resumable</i>"
                     )
                     buttons = [
-                        [Button.url("🍿 Stream Online", watch_link)],
-                        [Button.url("⚡ Fast Download", download_link)],
+                        [Button.url("🎬 Stream Online", watch_link)],
+                        [Button.url("📥 Direct Download", download_link)],
                     ]
 
                     if status_msg:
@@ -1720,45 +1720,45 @@ async def media_handler(event):
 
         if is_video:
             reply_text = (
-                f"🎬 <b>{html.escape(file_name)}</b>\n\n"
-                f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
-                f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                f"🍿 <b>Stream Online:</b>\n"
+                f"✅ <b>Media Link Generated!</b>\n\n"
+                f"📄 <b>Name:</b> <code>{html.escape(file_name)}</code>\n"
+                f"📦 <b>Size:</b> <code>{formatted_size}</code>\n\n"
+                f"🎬 <b>Stream / Watch Online:</b>\n"
                 f"{watch_link}\n\n"
-                f"⚡ <b>Fast Download:</b>\n"
+                f"📥 <b>Direct Download Link:</b>\n"
                 f"{download_link}\n\n"
-                f"<i>🚀 High-speed MTProto • Play in browser or VLC / MX Player</i>"
+                f"<i>⚡ High-Speed MTProto • Fast & Resumable</i>"
             )
             buttons = [
-                [Button.url("🍿 Stream Online", watch_link)],
-                [Button.url("⚡ Fast Download", download_link)],
+                [Button.url("🎬 Stream Online", watch_link)],
+                [Button.url("📥 Direct Download", download_link)],
             ]
         elif is_audio:
             reply_text = (
-                f"🎵 <b>{html.escape(file_name)}</b>\n\n"
-                f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
-                f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
+                f"✅ <b>Audio Link Generated!</b>\n\n"
+                f"📄 <b>Name:</b> <code>{html.escape(file_name)}</code>\n"
+                f"📦 <b>Size:</b> <code>{formatted_size}</code>\n\n"
                 f"🎧 <b>Listen Online:</b>\n"
                 f"{watch_link}\n\n"
-                f"⚡ <b>Fast Download:</b>\n"
+                f"📥 <b>Direct Download Link:</b>\n"
                 f"{download_link}\n\n"
-                f"<i>🚀 High-speed stream • Listen in browser or audio player</i>"
+                f"<i>⚡ High-Speed MTProto • Fast & Resumable</i>"
             )
             buttons = [
                 [Button.url("🎧 Listen Online", watch_link)],
-                [Button.url("⚡ Fast Download", download_link)],
+                [Button.url("📥 Direct Download", download_link)],
             ]
         else:
             reply_text = (
-                f"📄 <b>{html.escape(file_name)}</b>\n\n"
-                f"📁 <b>Size:</b> <code>{formatted_size}</code>\n"
-                f"⏳ <b>Expires:</b> <code>{LINK_EXPIRY_DAYS} days</code>\n\n"
-                f"⚡ <b>Fast Download:</b>\n"
+                f"✅ <b>File Link Generated!</b>\n\n"
+                f"📄 <b>Name:</b> <code>{html.escape(file_name)}</code>\n"
+                f"📦 <b>Size:</b> <code>{formatted_size}</code>\n\n"
+                f"📥 <b>Direct Download Link:</b>\n"
                 f"{download_link}\n\n"
-                f"<i>🚀 High-speed MTProto • Supports IDM & download managers</i>"
+                f"<i>⚡ High-Speed MTProto • Fast & Resumable</i>"
             )
             buttons = [
-                [Button.url("⚡ Fast Download", download_link)],
+                [Button.url("📥 Direct Download", download_link)],
             ]
 
         if status_msg:
